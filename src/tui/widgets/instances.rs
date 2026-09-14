@@ -36,12 +36,18 @@ static MODPACK_UPDATE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
 
 pub fn spawn_modpack_update_checks(instances: &[InstanceConfig]) {
+    if !crate::config::SETTINGS.read().general.check_modpack_updates {
+        return;
+    }
     for instance in instances {
         spawn_modpack_update_check(instance);
     }
 }
 
 pub fn spawn_modpack_update_check(instance: &InstanceConfig) {
+    if !crate::config::SETTINGS.read().general.check_modpack_updates {
+        return;
+    }
     let Some(source) = instance.modpack_source.clone() else {
         return;
     };

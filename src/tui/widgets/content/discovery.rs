@@ -138,6 +138,7 @@ pub(crate) fn spawn_provider_search(
             search_provider(
                 registry.get("modrinth"),
                 crate::config::SETTINGS
+                    .read()
                     .content
                     .discovery_provider_enabled("modrinth"),
                 &target,
@@ -148,6 +149,7 @@ pub(crate) fn spawn_provider_search(
             search_provider(
                 registry.get("curseforge"),
                 crate::config::SETTINGS
+                    .read()
                     .content
                     .discovery_provider_enabled("curseforge"),
                 &target,
@@ -177,7 +179,7 @@ pub(crate) fn spawn_provider_search(
             }
             let mut merged = merge_provider_results(
                 pages,
-                crate::config::SETTINGS.content.preferred_provider(),
+                crate::config::SETTINGS.read().content.preferred_provider(),
                 known_projects,
             );
             refresh_source_installed_versions(&mut merged.sources, &target);
@@ -795,7 +797,11 @@ impl DiscoveryState {
         installed_path: Option<PathBuf>,
         target_world: Option<(String, PathBuf)>,
     ) -> Option<VersionsRequest> {
-        let preferred = crate::config::SETTINGS.content.preferred_provider();
+        let preferred = crate::config::SETTINGS
+            .read()
+            .content
+            .preferred_provider()
+            .to_owned();
         sources.sort_by_key(|source| source.provider != preferred);
         let source = sources.first()?.clone();
         self.next_action_request_id = self.next_action_request_id.wrapping_add(1);

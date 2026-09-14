@@ -138,9 +138,11 @@ pub fn run(
     if marker_version(&metadata.layout_marker()) == Some(LAYOUT_VERSION)
         && metadata.cache_rebuild_pending().exists()
     {
+        crate::config::upgrade_config_file(config_file)?;
         return Ok(latest_layout_backup(&metadata).unwrap_or_else(|| metadata.backups()));
     }
     if !is_needed(instances_dir, meta_dir) {
+        crate::config::upgrade_config_file(config_file)?;
         initialize_new_layout(meta_dir)?;
         return Ok(metadata.backups());
     }
@@ -149,7 +151,7 @@ pub fn run(
 
     let mut journal = load_or_create_journal(instances_dir, &metadata)?;
     let instances = instance_directories(instances_dir)?;
-    let total = instances.len() as u64 + 7;
+    let total = instances.len() as u64 + 8;
     let mut current = journal.completed.len() as u64;
 
     if !is_complete(&journal, "backup") {
@@ -173,6 +175,21 @@ pub fn run(
             },
         )?;
         complete(&mut journal, &metadata, "backup")?;
+        current += 1;
+    }
+
+    if !is_complete(&journal, "config") {
+        report(
+            MigrationProgress::new(
+                "Upgrading launcher config",
+                config_file.display().to_string(),
+                current,
+                total,
+            )
+            .with_backup(&journal.backup_dir),
+        );
+        crate::config::upgrade_config_file(config_file)?;
+        complete(&mut journal, &metadata, "config")?;
         current += 1;
     }
 

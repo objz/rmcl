@@ -17,3 +17,15 @@ fn removing_selected_last_profile_clamps_selection() {
     assert_eq!(state.active_profile, None);
     assert_eq!(state.list_state.selected, Some(1));
 }
+
+#[test]
+fn info_pane_does_not_bind_desktop_toggle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = SettingsState::new(tmp.path().to_path_buf());
+    state.pane = SettingsPane::Info;
+
+    assert!(matches!(
+        handle_key(&KeyEvent::from(KeyCode::Char('d')), &mut state, None),
+        SettingsAction::None
+    ));
+}

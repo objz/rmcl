@@ -53,6 +53,14 @@ pub fn get(name: &str) -> Option<RunState> {
 }
 
 #[must_use]
+pub fn is_active(name: &str) -> bool {
+    matches!(
+        get(name),
+        Some(RunState::Authenticating | RunState::Starting | RunState::Running)
+    )
+}
+
+#[must_use]
 pub fn all() -> Vec<(String, RunState)> {
     RUNNING
         .lock()

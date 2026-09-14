@@ -33,6 +33,8 @@ pub struct TemplateContext<'a> {
     pub launcher_version: &'a str,
     pub clientid: &'a str,
     pub quick_play_singleplayer: Option<&'a str>,
+    pub resolution_width: Option<&'a str>,
+    pub resolution_height: Option<&'a str>,
 }
 
 pub fn substitute(input: &str, ctx: &TemplateContext) -> String {
@@ -88,6 +90,8 @@ fn lookup(name: &str, ctx: &TemplateContext) -> Option<String> {
         "launcher_version" => ctx.launcher_version.to_string(),
         "clientid" => ctx.clientid.to_string(),
         "quickPlaySingleplayer" => ctx.quick_play_singleplayer?.to_owned(),
+        "resolution_width" => ctx.resolution_width?.to_owned(),
+        "resolution_height" => ctx.resolution_height?.to_owned(),
         _ => return None,
     })
 }

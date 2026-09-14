@@ -1,21 +1,32 @@
+[general]
+# check imported modpacks and managed content for updates automatically
+check_modpack_updates = true
+check_content_updates = true
+
 [paths]
-# where instances are stored
-instances_dir = "~/.local/share/rmcl/instances"
-
-# metadata, cache, whatever else ends up there
-meta_dir = "~/.local/share/rmcl/meta"
-
-# optional java override (empty = uses JAVA_HOME)
-java_path = ""
+# instances_dir and meta_dir use platform defaults when omitted
+# java_path is omitted to select Java automatically
+# instances_dir = "/path/to/minecraft/instances"
+# meta_dir = "/path/to/rmcl/meta"
+# java_path = "/usr/bin/java"
 
 [defaults]
-# default heap settings
+# inherited by instances that do not override their memory
 memory_min = "512M"
 memory_max = "2G"
+# appended to every instance; instance values take precedence where applicable
+jvm_args = []
+environment = {}
+# inherited by instances that use launcher window defaults
+window_mode = "windowed"
+resolution = [854, 480]
 
 [ui]
-# image protocol for content icons and screenshots: halfblocks, quadrants, kitty, or iterm2
-image_protocol = "kitty"
+# image protocol: auto, halfblocks, quadrants, kitty, or iterm2
+image_protocol = "auto"
+# [] shows all guides; ["main"] keeps popup guides; ["all"] hides every guide
+# areas can also be hidden selectively: instances, content, accounts, settings, popups
+hidden_shortcut_hints = []
 # error popup timing (in ms)
 error_auto_dismiss_ms = 5000
 error_slide_start_ms = 3500

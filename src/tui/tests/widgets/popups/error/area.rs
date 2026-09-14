@@ -11,8 +11,20 @@ fn frame() -> Rect {
 
 #[test]
 fn returns_none_after_dismiss_timeout() {
-    let past_dismiss = SETTINGS.ui.error_auto_dismiss_ms as u128 + 1;
+    let past_dismiss = SETTINGS.read().ui.error_auto_dismiss_ms as u128 + 1;
     assert!(popup_area(frame(), "msg", 0, past_dismiss).is_none());
+}
+
+#[test]
+fn returns_none_after_slide_out_finishes() {
+    let settings = SETTINGS.read();
+    let after_slide = settings
+        .ui
+        .error_slide_start_ms
+        .saturating_add(settings.ui.error_fly_out_ms) as u128;
+    drop(settings);
+
+    assert!(popup_area(frame(), "msg", 0, after_slide).is_none());
 }
 
 #[test]

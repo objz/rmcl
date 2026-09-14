@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget},
 };
 
-use crate::config::theme::BORDER_STYLE;
+use crate::config::{settings::ShortcutHintScope, theme::BORDER_STYLE};
 
 type ContentFn<'a> = Box<dyn Fn(Rect, &mut Buffer) + 'a>;
 
@@ -56,7 +56,9 @@ impl<'a> Widget for PopupFrame<'a> {
             block = block.title_top(sl.alignment(Alignment::Right));
         }
 
-        if let Some(kb) = self.keybinds {
+        if let Some(kb) = self.keybinds
+            && super::shortcut_hints_visible(ShortcutHintScope::Popups)
+        {
             block = block.title_bottom(kb.alignment(Alignment::Right));
         }
 

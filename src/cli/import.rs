@@ -16,8 +16,8 @@ pub async fn handle_import(matches: &ArgMatches) -> CliResult {
     let override_name = matches.get_one::<String>("name");
     let override_version = matches.get_one::<String>("version");
 
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-    let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+    let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
     let manager = InstanceManager::new(instances_dir, meta_dir);
     let client = crate::net::HttpClient::new();
 

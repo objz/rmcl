@@ -27,10 +27,10 @@ pub async fn init() {
         return;
     }
 
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-    let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+    let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
+    let config = crate::config::get_config_path().join("config.toml");
     if crate::layout_migration::is_needed(&instances_dir, &meta_dir) {
-        let config = crate::config::get_config_path().join("config.toml");
         if let Err(error) =
             crate::layout_migration::run(&instances_dir, &meta_dir, &config, |progress| {
                 eprintln!(
@@ -45,6 +45,8 @@ pub async fn init() {
     } else if let Err(error) = crate::layout_migration::initialize_new_layout(&meta_dir) {
         eprintln!("error: cannot initialize metadata layout: {error}");
         std::process::exit(1);
+    } else if let Err(error) = crate::config::upgrade_config_file(&config) {
+        eprintln!("warning: cannot upgrade launcher config: {error}");
     }
     if crate::layout_migration::cache_rebuild_pending(&meta_dir) {
         let manager = crate::instance::InstanceManager::new(&instances_dir, &meta_dir);

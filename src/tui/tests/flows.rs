@@ -54,9 +54,6 @@ fn escape_returns_through_nested_sections() {
     assert_eq!(ui.app.focused, FocusedArea::Instances);
 
     ui.app.focused = FocusedArea::Settings;
-    ui.key(KeyCode::Char('a'));
-    ui.key(KeyCode::Esc);
-    assert_eq!(ui.app.focused, FocusedArea::Settings);
     ui.key(KeyCode::Esc);
     assert_eq!(ui.app.focused, FocusedArea::Instances);
 
@@ -562,7 +559,13 @@ fn deleting_a_required_library_warns_but_can_continue() {
 #[test]
 fn confirmed_account_delete_updates_the_account_panel() {
     let mut ui = UiHarness::new();
+    ui.add_instance("preferred-account-test");
     ui.add_account("Player");
+    ui.app.instances_state.instances[0].preferred_account = Some("Player".to_owned());
+    ui.app
+        .instance_manager
+        .save(&ui.app.instances_state.instances[0])
+        .unwrap();
     ui.app.focused = FocusedArea::Account;
 
     ui.key(KeyCode::Char('d'));
@@ -571,22 +574,504 @@ fn confirmed_account_delete_updates_the_account_panel() {
     assert_eq!(ui.app.focused, FocusedArea::Account);
     assert!(ui.app.account_state.store.accounts.is_empty());
     assert_eq!(ui.app.account_state.list_state.selected, None);
+    assert_eq!(
+        ui.app
+            .instances_state
+            .selected_instance()
+            .unwrap()
+            .preferred_account,
+        None
+    );
+    assert_eq!(
+        ui.app
+            .instance_manager
+            .load_one("preferred-account-test")
+            .unwrap()
+            .preferred_account,
+        None
+    );
 }
 
 #[test]
-fn settings_profile_can_be_created_from_key_events() {
+fn settings_panel_routes_legacy_edit_keys_to_tui_popups() {
     let mut ui = UiHarness::new();
+    ui.add_instance("settings-test");
     ui.app.focused = FocusedArea::Settings;
 
+    ui.key(KeyCode::Right);
+    ui.key(KeyCode::Char('e'));
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    ui.draw();
+    assert!(ui.screen().contains("Instance Settings · settings-test"));
+    assert!(!ui.screen().contains("Instance Settings *"));
+    assert!(ui.screen().contains("settings-test"));
+    assert!(ui.screen().contains("Game version"));
+    assert!(ui.screen().contains("Memory min"));
+    assert!(ui.screen().contains("Desktop"));
+    assert!(ui.screen().contains('◆'));
+    assert!(!ui.screen().contains('█'));
+    assert!(!ui.screen().contains("● enabled"));
+    assert!(!ui.screen().contains("Integration"));
+    assert!(!ui.screen().contains('▰'));
+    ui.key(KeyCode::Down);
+    ui.key(KeyCode::Enter);
+    ui.draw();
+    assert!(ui.screen().contains("Mod Loader · settings-test"));
+    assert!(ui.screen().contains("Fabric"));
+    assert!(ui.screen().contains("Forge"));
+    ui.key(KeyCode::Esc);
+    for _ in 0..6 {
+        ui.key(KeyCode::Down);
+    }
+    ui.key(KeyCode::Enter);
+    for character in "-Xfoo".chars() {
+        ui.key(KeyCode::Char(character));
+    }
+    ui.draw();
+    assert!(ui.screen().contains("-Xfoo"));
+    ui.key(KeyCode::Enter);
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    assert_eq!(
+        ui.app.instances_state.selected_instance().unwrap().jvm_args,
+        ["-Xfoo"]
+    );
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::Settings);
+
+    ui.key(KeyCode::Char('g'));
+    assert_eq!(ui.app.focused, FocusedArea::GlobalSettings);
+    ui.draw();
+    assert!(ui.screen().contains("Launcher Settings"));
+    assert!(ui.screen().contains("Appearance"));
+    assert!(ui.screen().contains("Image rendering"));
+    assert!(ui.screen().contains("Memory max"));
+    assert!(ui.screen().contains('◆'));
+    assert!(!ui.screen().contains('█'));
+    assert!(!ui.screen().contains('▰'));
+    ui.key(KeyCode::Enter);
+    ui.draw();
+    assert!(ui.screen().contains("Theme"));
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::Settings);
+}
+
+#[test]
+fn launcher_settings_expand_to_storage_and_confirm_cache_cleanup() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("global-settings-test");
+    ui.key(KeyCode::Char('G'));
+
+    for _ in 0..18 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.draw();
+    assert!(ui.screen().contains("Storage"));
+    assert!(ui.screen().contains("Instances"));
+    assert!(ui.screen().contains("Metadata"));
+
+    for _ in 18..24 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    assert_eq!(ui.app.focused, FocusedArea::ConfirmDelete);
+    assert!(matches!(
+        confirm::pending_target(),
+        Some(confirm::ConfirmTarget::LauncherCache)
+    ));
+    ui.draw();
+    assert!(ui.screen().contains("Clear caches"));
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::GlobalSettings);
+}
+
+#[test]
+fn runtime_settings_use_the_shared_confirmation_popup() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("runtime-test");
+    ui.app.focused = FocusedArea::Settings;
+    ui.key(KeyCode::Right);
+    ui.key(KeyCode::Char('e'));
+    ui.app
+        .instance_settings
+        .as_mut()
+        .unwrap()
+        .draft
+        .game_version = "1.21.2".to_owned();
+
+    for _ in 0..5 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Char('l'));
+
+    assert_eq!(ui.app.focused, FocusedArea::ConfirmDelete);
+    assert!(matches!(
+        confirm::pending_target(),
+        Some(confirm::ConfirmTarget::InstanceRuntime { name, .. }) if name == "runtime-test"
+    ));
+    ui.draw();
+    assert!(ui.screen().contains("Change runtime"));
+    assert!(!ui.screen().contains("Target:"));
+    assert!(
+        ui.screen()
+            .contains("Some installed mods may be incompatible")
+    );
+    assert!(!ui.screen().contains("incompatible."));
+    assert!(
+        !crate::feedback::errors::ERROR_EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.level == tracing::Level::WARN
+                    && event.message == "Some installed mods may be incompatible"
+            })
+    );
+
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::Settings);
+}
+
+#[test]
+fn jvm_arguments_use_the_same_editor_controls_as_environment() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("jvm-clear-test");
+    ui.key(KeyCode::Char('E'));
+    ui.app.instance_settings.as_mut().unwrap().draft.jvm_args =
+        vec!["-XX:+UseG1GC".to_owned(), "-Xss1M".to_owned()];
+
+    for _ in 0..7 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Char('d'));
+
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    assert_eq!(
+        ui.app
+            .instance_settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .jvm_args
+            .len(),
+        2
+    );
+    ui.draw();
+    assert!(!ui.screen().contains("[d] clear"));
+}
+
+#[test]
+fn enabling_a_different_automatic_java_requires_confirmation() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("java-auto-test");
+    ui.key(KeyCode::Char('E'));
+    ui.app.instance_settings.as_mut().unwrap().draft.java_path = Some("/custom/java".to_owned());
+
+    for _ in 0..4 {
+        ui.key(KeyCode::Char('j'));
+    }
     ui.key(KeyCode::Char('a'));
-    for character in "qConfig".chars() {
+
+    assert_eq!(ui.app.focused, FocusedArea::ConfirmDelete);
+    assert!(matches!(
+        confirm::pending_target(),
+        Some(confirm::ConfirmTarget::AutomaticSelection {
+            setting: confirm::AutomaticSetting::Java,
+            instance: Some(name),
+            ..
+        }) if name == "java-auto-test"
+    ));
+    ui.draw();
+    assert!(ui.screen().contains("Enable automatic Java"));
+    assert!(
+        ui.screen()
+            .contains("Use the automatically selected Java runtime")
+    );
+    assert!(!ui.screen().contains("/custom/java"));
+
+    ui.key(KeyCode::Esc);
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    assert_eq!(
+        ui.app
+            .instance_settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .java_path
+            .as_deref(),
+        Some("/custom/java")
+    );
+    ui.key(KeyCode::Char('a'));
+
+    ui.key(KeyCode::Enter);
+
+    assert_eq!(ui.app.focused, FocusedArea::InstanceSettings);
+    assert_eq!(
+        ui.app
+            .instances_state
+            .selected_instance()
+            .unwrap()
+            .java_path,
+        None
+    );
+}
+
+#[test]
+fn enabling_a_different_automatic_account_requires_confirmation() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("account-auto-test");
+    ui.add_account("Active");
+    ui.app
+        .account_state
+        .store
+        .accounts
+        .push(crate::auth::Account {
+            uuid: "preferred".to_owned(),
+            username: "Preferred".to_owned(),
+            account_type: crate::auth::AccountType::Microsoft,
+            active: false,
+            refresh_token: Some("refresh".to_owned()),
+            cached_mc_token: None,
+            cached_mc_token_expires_at: None,
+        });
+    ui.app.instances_state.instances[0].preferred_account = Some("preferred".to_owned());
+    ui.app
+        .instance_manager
+        .save(&ui.app.instances_state.instances[0])
+        .unwrap();
+    ui.key(KeyCode::Char('E'));
+    for _ in 0..3 {
+        ui.key(KeyCode::Char('j'));
+    }
+
+    ui.key(KeyCode::Char('a'));
+
+    assert_eq!(ui.app.focused, FocusedArea::ConfirmDelete);
+    assert!(matches!(
+        confirm::pending_target(),
+        Some(confirm::ConfirmTarget::AutomaticSelection {
+            setting: confirm::AutomaticSetting::Account,
+            instance: Some(name),
+        }) if name == "account-auto-test"
+    ));
+    ui.draw();
+    assert!(ui.screen().contains("Enable automatic account"));
+    assert!(ui.screen().contains("Use the currently active account"));
+    assert!(!ui.screen().contains("Preferred → Active"));
+
+    ui.key(KeyCode::Esc);
+    assert_eq!(
+        ui.app
+            .instance_settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .preferred_account
+            .as_deref(),
+        Some("preferred")
+    );
+    ui.key(KeyCode::Char('a'));
+    ui.key(KeyCode::Enter);
+    assert_eq!(
+        ui.app
+            .instances_state
+            .selected_instance()
+            .unwrap()
+            .preferred_account,
+        None
+    );
+}
+
+#[test]
+fn instance_settings_validation_errors_use_the_toast_buffer() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("toast-test");
+    ui.key(KeyCode::Char('E'));
+    let state = ui.app.instance_settings.as_mut().unwrap();
+    state.draft.loader = crate::instance::ModLoader::Vanilla;
+    state.draft.loader_version = None;
+
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Enter);
+
+    assert!(
+        crate::feedback::errors::ERROR_EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|error| error.message == "Vanilla does not use a loader version")
+    );
+}
+
+#[test]
+fn enabling_an_empty_launch_hook_uses_a_warning_toast() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("empty-hook-test");
+    ui.key(KeyCode::Char('E'));
+    for _ in 0..13 {
+        ui.key(KeyCode::Char('j'));
+    }
+
+    ui.key(KeyCode::Char(' '));
+
+    assert!(
+        crate::feedback::errors::ERROR_EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.level == tracing::Level::WARN
+                    && event.message == "Enter a pre-launch command before enabling it"
+            })
+    );
+}
+
+#[test]
+fn settings_use_java_memory_and_resolution_controls() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("controls-test");
+    ui.key(KeyCode::Char('E'));
+
+    for _ in 0..4 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    ui.draw();
+    assert!(ui.screen().contains("Java Runtime"));
+    assert!(!ui.screen().contains("auto"));
+    assert!(!ui.screen().contains("custom"));
+    assert!(!ui.screen().contains("Automatic"));
+    assert!(!ui.screen().contains("Custom path"));
+    assert!(!ui.screen().contains("Manual"));
+    ui.key(KeyCode::Esc);
+
+    ui.app.instance_settings.as_mut().unwrap().draft.memory_min = Some("512M".to_owned());
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('l'));
+    assert_eq!(
+        ui.app
+            .instance_settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .memory_min
+            .as_deref(),
+        Some("1G")
+    );
+    assert_eq!(
+        ui.app
+            .instances_state
+            .selected_instance()
+            .unwrap()
+            .memory_min
+            .as_deref(),
+        Some("1G")
+    );
+
+    for _ in 0..6 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    ui.draw();
+    assert!(ui.screen().contains("Resolution"));
+    assert!(ui.screen().contains("1920x1080"));
+    assert!(!ui.screen().contains("Preset"));
+    assert!(!ui.screen().contains("Inherit"));
+    assert!(!ui.screen().contains("custom"));
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Esc);
+
+    ui.key(KeyCode::Char('G'));
+    for _ in 0..6 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    ui.draw();
+    assert!(ui.screen().contains("Java Runtime"));
+    assert!(!ui.screen().contains("auto"));
+    assert!(!ui.screen().contains("Automatic"));
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Esc);
+}
+
+#[test]
+fn instance_launch_options_autosave_through_the_editor() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("launch-options-test");
+    ui.add_account("Player");
+    ui.key(KeyCode::Char('E'));
+
+    for _ in 0..3 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    ui.key(KeyCode::Enter);
+
+    for _ in 0..5 {
+        ui.key(KeyCode::Char('j'));
+    }
+    ui.key(KeyCode::Enter);
+    for character in "MESA_LOADER_DRIVER_OVERRIDE=zink".chars() {
         ui.key(KeyCode::Char(character));
     }
     ui.key(KeyCode::Enter);
 
-    assert!(!ui.app.exit);
-    assert_eq!(ui.app.focused, FocusedArea::Settings);
-    assert_eq!(ui.app.settings_state.profiles, ["qConfig"]);
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Char('j'));
+    ui.key(KeyCode::Enter);
+
+    ui.key(KeyCode::Char('k'));
+    ui.draw();
+    assert!(ui.screen().contains("Java"));
+    ui.key(KeyCode::Char('c'));
+    for character in "/opt/lib/libglfw.so.3".chars() {
+        ui.key(KeyCode::Char(character));
+    }
+    ui.key(KeyCode::Enter);
+
+    let saved = ui
+        .app
+        .instance_manager
+        .load_one("launch-options-test")
+        .unwrap();
+    assert_eq!(
+        saved
+            .environment
+            .get("MESA_LOADER_DRIVER_OVERRIDE")
+            .map(String::as_str),
+        Some("zink")
+    );
+    assert_eq!(saved.window_mode, crate::instance::WindowMode::Fullscreen);
+    assert_eq!(saved.preferred_account.as_deref(), Some("Player"));
+    assert_eq!(saved.glfw_path.as_deref(), Some("/opt/lib/libglfw.so.3"));
+}
+
+#[test]
+fn settings_panel_keeps_direct_profile_management() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("profile-test");
+    ui.app.focused = FocusedArea::Settings;
+
+    ui.key(KeyCode::Char('a'));
+    for character in "main".chars() {
+        ui.key(KeyCode::Char(character));
+    }
+    ui.key(KeyCode::Enter);
+
+    assert_eq!(
+        ui.app
+            .instances_state
+            .selected_instance()
+            .unwrap()
+            .config_sync_profile
+            .as_deref(),
+        Some("main")
+    );
+    ui.draw();
+    assert!(ui.screen().contains("main"));
 }
 
 #[test]

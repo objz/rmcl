@@ -58,6 +58,8 @@ impl Fixture {
             launcher_version: "0.3.0",
             clientid: "0",
             quick_play_singleplayer: None,
+            resolution_width: None,
+            resolution_height: None,
         }
     }
 }
@@ -113,5 +115,17 @@ fn quick_play_world_is_substituted_when_present() {
     assert_eq!(
         substitute("${quickPlaySingleplayer}", &context),
         "New World"
+    );
+}
+
+#[test]
+fn custom_resolution_is_substituted_when_present() {
+    let fx = Fixture::unix();
+    let mut context = fx.ctx();
+    context.resolution_width = Some("1920");
+    context.resolution_height = Some("1080");
+    assert_eq!(
+        substitute("${resolution_width}x${resolution_height}", &context),
+        "1920x1080"
     );
 }

@@ -74,7 +74,16 @@ pub fn popup_area(frame_area: Rect, message: &str, base_y: u16, elapsed_ms: u128
     const MAX_W: usize = 58;
     const MIN_W: usize = 22;
 
-    if elapsed_ms >= SETTINGS.ui.error_auto_dismiss_ms as u128 {
+    let visible_until = {
+        let settings = SETTINGS.read();
+        settings.ui.error_auto_dismiss_ms.min(
+            settings
+                .ui
+                .error_slide_start_ms
+                .saturating_add(settings.ui.error_fly_out_ms),
+        ) as u128
+    };
+    if elapsed_ms >= visible_until {
         return None;
     }
 

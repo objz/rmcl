@@ -66,6 +66,11 @@ fn content_provider_settings_are_normalized() {
         merged.discovery_provider_label_with_curseforge(true),
         "providers"
     );
+
+    let legacy: Content = toml::from_str("preferred_provider = \"CurseForge\"").unwrap();
+    assert_eq!(legacy.preferred_provider, ContentProvider::CurseForge);
+    let unknown: Content = toml::from_str("preferred_provider = \"unknown\"").unwrap();
+    assert_eq!(unknown.preferred_provider, ContentProvider::Modrinth);
 }
 
 #[test]
@@ -104,4 +109,29 @@ memory_max = "8G"
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(config.defaults.memory_max, "8G");
     assert_eq!(config.defaults.memory_min, "512M");
+}
+
+#[test]
+fn shortcut_hints_support_global_main_and_selective_hiding() {
+    let mut ui: Ui = toml::from_str("hidden_shortcut_hints = []").unwrap();
+    assert!(
+        ShortcutHintScope::AREAS
+            .iter()
+            .all(|scope| ui.show_shortcut_hints(*scope))
+    );
+
+    ui = toml::from_str("hidden_shortcut_hints = [\"main\"]").unwrap();
+    assert!(!ui.show_shortcut_hints(ShortcutHintScope::Instances));
+    assert!(ui.show_shortcut_hints(ShortcutHintScope::Popups));
+
+    ui.set_shortcut_hints(ShortcutHintScope::Content, true);
+    assert!(ui.show_shortcut_hints(ShortcutHintScope::Content));
+    assert!(!ui.show_shortcut_hints(ShortcutHintScope::Accounts));
+
+    ui.hidden_shortcut_hints = [ShortcutHintScope::All].into_iter().collect();
+    assert!(
+        ShortcutHintScope::AREAS
+            .iter()
+            .all(|scope| !ui.show_shortcut_hints(*scope))
+    );
 }

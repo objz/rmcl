@@ -8,7 +8,11 @@ use super::{
 
 #[test]
 fn fitted_keybinds_use_terminal_width_and_omit_overflow() {
-    let line = keybind_line_fitted(&[("⏎", " select"), ("a", " add")], 10);
+    let line = keybind_line_fitted(
+        crate::config::settings::ShortcutHintScope::Accounts,
+        &[("⏎", " select"), ("a", " add")],
+        10,
+    );
 
     assert_eq!(line.width(), 10);
     assert_eq!(line.to_string(), "[⏎] select");

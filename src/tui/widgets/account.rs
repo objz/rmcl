@@ -225,6 +225,7 @@ pub fn render(frame: &mut Frame, area: Rect, focused: FocusedArea, state: &mut A
 
     let keybind_line = if focused == FocusedArea::Account {
         Some(super::popups::keybind_line_fitted(
+            crate::config::settings::ShortcutHintScope::Accounts,
             &[
                 ("⏎", " select"),
                 ("a", " add"),

@@ -50,6 +50,8 @@ impl Fixture {
             launcher_version: "0.3.0",
             clientid: "0",
             quick_play_singleplayer: None,
+            resolution_width: None,
+            resolution_height: None,
         }
     }
 

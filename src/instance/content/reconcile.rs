@@ -151,8 +151,13 @@ async fn reconcile(job: ReconcileJob, task: &ProgressTask) -> ReconcileResult {
     let paths = InstancePaths::new(instances_dir.join(&instance_name));
     let manifest_path = paths.content_manifest();
     let minecraft_dir = paths.minecraft();
-    let retry_hours = crate::config::SETTINGS.content.unmatched_retry_hours;
-    let max_fingerprint_size_mib = crate::config::SETTINGS.content.max_fingerprint_size_mib;
+    let (retry_hours, max_fingerprint_size_mib) = {
+        let settings = crate::config::SETTINGS.read();
+        (
+            settings.content.unmatched_retry_hours,
+            settings.content.max_fingerprint_size_mib,
+        )
+    };
     let inventory_progress = task.handle();
     let inventory_minecraft_dir = minecraft_dir.clone();
     let inventory = tokio::task::spawn_blocking(move || {
@@ -400,6 +405,7 @@ fn reconcile_inventory(
         }
         let provider_unchecked = ["modrinth", "curseforge"].into_iter().any(|provider| {
             crate::config::SETTINGS
+                .read()
                 .content
                 .discovery_provider_enabled(provider)
                 && provider_was_not_checked(&record, provider)
@@ -553,8 +559,16 @@ async fn resolve_queries(
                     },
                     Vec::new(),
                 ),
-                _ if !crate::config::SETTINGS.content.ask_on_provider_conflict => {
-                    let preferred = crate::config::SETTINGS.content.preferred_provider();
+                _ if !crate::config::SETTINGS
+                    .read()
+                    .content
+                    .ask_on_provider_conflict =>
+                {
+                    let preferred = crate::config::SETTINGS
+                        .read()
+                        .content
+                        .preferred_provider()
+                        .to_owned();
                     if let Some(project) = candidates
                         .iter()
                         .find(|project| project.provider == preferred)

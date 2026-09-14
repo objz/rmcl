@@ -206,24 +206,8 @@ impl InstanceManager {
             .versions()
             .join(game_version)
             .join("meta.json");
-        if let Some(parent) = meta_json_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!(
-                "Failed to ensure meta dir {} exists: {}",
-                parent.display(),
-                e
-            );
-        }
-        if let Err(e) = std::fs::write(&meta_json_path, &raw_meta_bytes) {
-            tracing::warn!(
-                "Failed to save version meta {}: {}",
-                meta_json_path.display(),
-                e
-            );
-        } else {
-            tracing::debug!("Saved version meta to {}", meta_json_path.display());
-        }
+        crate::storage::write_atomic(&meta_json_path, &raw_meta_bytes)?;
+        tracing::debug!("Saved version meta to {}", meta_json_path.display());
 
         crate::net::mojang::download_libraries(&self.client, &version_meta, &self.meta_dir).await?;
 
@@ -262,6 +246,7 @@ impl InstanceManager {
                 }
             })?;
 
+        let defaults = crate::config::SETTINGS.read().defaults.clone();
         let config = InstanceConfig {
             name: name.to_string(),
             game_version: game_version.to_string(),
@@ -273,7 +258,15 @@ impl InstanceManager {
             memory_max: None,
             memory_min: None,
             jvm_args: vec![],
-            resolution: None,
+            environment: Default::default(),
+            window_mode: defaults.window_mode,
+            inherit_window_mode: true,
+            resolution: defaults.resolution,
+            inherit_resolution: true,
+            preferred_account: None,
+            pre_launch_command: Default::default(),
+            post_exit_command: Default::default(),
+            glfw_path: None,
             config_sync_profile: None,
             modpack_source: None,
         };
@@ -306,15 +299,40 @@ impl InstanceManager {
             .versions()
             .join(&config.game_version)
             .join("meta.json");
-        let (version_meta, raw_meta) = if meta_path.exists() {
-            let raw = std::fs::read(&meta_path)?;
-            let parsed = serde_json::from_slice(&raw).map_err(|error| {
-                InstanceError::InvalidName(format!(
-                    "Cached metadata for Minecraft {} is invalid: {error}",
-                    config.game_version
-                ))
-            })?;
-            (parsed, raw)
+        let cached_meta = match std::fs::read(&meta_path) {
+            Ok(raw) => match serde_json::from_slice(&raw) {
+                Ok(parsed)
+                    if serde_json::from_slice::<serde_json::Value>(&raw)
+                        .ok()
+                        .is_some_and(|value| {
+                            value.as_object().is_some_and(|object| {
+                                object.contains_key("arguments")
+                                    || object.contains_key("minecraftArguments")
+                            })
+                        }) =>
+                {
+                    Some((parsed, raw))
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "Cached metadata for Minecraft {} is incomplete; downloading it again",
+                        config.game_version
+                    );
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Cached metadata for Minecraft {} is invalid; downloading it again: {error}",
+                        config.game_version
+                    );
+                    None
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let (version_meta, raw_meta, fetched_meta) = if let Some((parsed, raw)) = cached_meta {
+            (parsed, raw, false)
         } else {
             let manifest = crate::net::mojang::fetch_version_manifest(&self.client).await?;
             let version_entry = manifest
@@ -327,14 +345,17 @@ impl InstanceManager {
                         config.game_version
                     ))
                 })?;
-            crate::net::mojang::fetch_version_meta_with_raw(&self.client, version_entry).await?
+            let (parsed, raw) =
+                crate::net::mojang::fetch_version_meta_with_raw(&self.client, version_entry)
+                    .await?;
+            (parsed, raw, true)
         };
         crate::net::mojang::download_client_jar(&self.client, &version_meta, &self.meta_dir)
             .await?;
         if let Some(parent) = meta_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if !meta_path.exists() {
+        if fetched_meta {
             crate::storage::write_atomic(&meta_path, &raw_meta)?;
         }
         crate::net::mojang::download_libraries(&self.client, &version_meta, &self.meta_dir).await?;
@@ -347,34 +368,43 @@ impl InstanceManager {
                     config.name, config.loader
                 ))
             })?;
-            let profile_name = match config.loader {
-                ModLoader::Fabric => {
-                    format!("fabric-{}-{loader_version}.json", config.game_version)
-                }
-                ModLoader::Quilt => {
-                    format!("quilt-{}-{loader_version}.json", config.game_version)
-                }
-                ModLoader::Forge => {
-                    format!("forge-{}-{loader_version}.json", config.game_version)
-                }
-                ModLoader::NeoForge => format!("neoforge-{loader_version}.json"),
-                ModLoader::Vanilla => unreachable!(),
-            };
-            if !metadata_paths.loader_profiles().join(profile_name).exists() {
-                task.set_sub_action(format!("{} {}", config.loader, loader_version));
-                crate::instance::loader::get_installer(config.loader)
-                    .install(
-                        &self.client,
-                        &config.game_version,
-                        loader_version,
-                        &self.instances_dir.join(&config.name),
-                        &self.meta_dir,
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        InstallError::Download(error) => InstanceError::Download(error),
-                        InstallError::Installer(error) => InstanceError::InstallerError(error),
-                    })?;
+            task.set_sub_action(format!("{} {}", config.loader, loader_version));
+            crate::instance::loader::get_installer(config.loader)
+                .install_with_java(
+                    &self.client,
+                    &config.game_version,
+                    loader_version,
+                    &self.instances_dir.join(&config.name),
+                    &self.meta_dir,
+                    config.java_path.as_deref(),
+                )
+                .await
+                .map_err(|error| match error {
+                    InstallError::Download(error) => InstanceError::Download(error),
+                    InstallError::Installer(error) => InstanceError::InstallerError(error),
+                })?;
+            let profile_filename = crate::instance::loader::profile_filename(
+                config.loader,
+                &config.game_version,
+                loader_version,
+            )
+            .expect("non-vanilla loaders have profile filenames");
+            let profile_path = metadata_paths.loader_profiles().join(profile_filename);
+            let profile: crate::launch_profile::model::LaunchProfile =
+                serde_json::from_slice(&std::fs::read(&profile_path)?)?;
+            if profile.id.trim().is_empty()
+                || profile
+                    .main_class
+                    .as_deref()
+                    .is_none_or(|main_class| main_class.trim().is_empty())
+            {
+                return Err(InstanceError::InstallerError(InstallerError::Profile(
+                    format!(
+                        "Installed {} profile {} is missing id or mainClass",
+                        config.loader,
+                        profile_path.display()
+                    ),
+                )));
             }
         }
         task.finish();
@@ -382,6 +412,7 @@ impl InstanceManager {
     }
 
     pub fn delete(&self, name: &str) -> Result<(), InstanceError> {
+        validate_name(name)?;
         let instance_dir = self.instances_dir.join(name);
         if !instance_dir.exists() {
             tracing::warn!(
@@ -407,6 +438,7 @@ impl InstanceManager {
     }
 
     pub fn rename(&self, old_name: &str, new_name: &str) -> Result<(), InstanceError> {
+        validate_name(old_name)?;
         let new_name = new_name.trim();
         if new_name.is_empty() {
             tracing::warn!("Cannot rename instance '{}': new name is empty", old_name);
@@ -441,6 +473,9 @@ impl InstanceManager {
             );
             return Err(InstanceError::AlreadyExists(new_name.to_string()));
         }
+        let mut config = self.load_one(old_name)?;
+        config.name = new_name.to_owned();
+        let json = serde_json::to_vec_pretty(&config)?;
         tracing::info!("Renaming instance '{}' to '{}'", old_name, new_name);
         if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
             tracing::error!(
@@ -453,21 +488,19 @@ impl InstanceManager {
         }
 
         let config_path = new_dir.join("instance.json");
-        if let Ok(data) = std::fs::read_to_string(&config_path)
-            && let Ok(mut config) = serde_json::from_str::<InstanceConfig>(&data)
-        {
-            config.name = new_name.to_string();
-            if let Ok(json) = serde_json::to_string_pretty(&config) {
-                let _ = std::fs::write(&config_path, json);
+        if let Err(error) = crate::storage::write_atomic(&config_path, &json) {
+            if let Err(rollback_error) = std::fs::rename(&new_dir, &old_dir) {
+                tracing::error!(
+                    "Failed to roll back instance rename from {} to {}: {}",
+                    new_dir.display(),
+                    old_dir.display(),
+                    rollback_error
+                );
             }
-            if let Err(e) = crate::instance::desktop::rename(old_name, &config) {
-                tracing::warn!("Failed to rename desktop shortcut: {}", e);
-            }
-        } else {
-            tracing::warn!(
-                "Renamed instance directory but could not update config at {}",
-                config_path.display()
-            );
+            return Err(error.into());
+        }
+        if let Err(e) = crate::instance::desktop::rename(old_name, &config) {
+            tracing::warn!("Failed to rename desktop shortcut: {}", e);
         }
 
         Ok(())
@@ -559,10 +592,14 @@ impl InstanceManager {
     }
 
     pub fn save(&self, instance: &InstanceConfig) -> Result<(), InstanceError> {
+        validate_name(&instance.name)?;
         let instance_dir = self.instances_dir.join(&instance.name);
+        if !instance_dir.is_dir() {
+            return Err(InstanceError::NotFound(instance.name.clone()));
+        }
         let config_path = instance_dir.join("instance.json");
         let json = serde_json::to_string_pretty(instance)?;
-        std::fs::write(&config_path, &json)?;
+        crate::storage::write_atomic(&config_path, json.as_bytes())?;
         tracing::debug!(
             "Saved instance '{}' config to {}",
             instance.name,
@@ -587,7 +624,11 @@ fn validate_name(name: &str) -> Result<(), InstanceError> {
             name
         )));
     }
-    if name.contains('/') || name.contains('\\') || name.starts_with('.') {
+    if name.contains('/')
+        || name.contains('\\')
+        || name.starts_with('.')
+        || name.chars().any(char::is_control)
+    {
         return Err(InstanceError::InvalidName(format!(
             "Name contains invalid characters: {:?}",
             name

@@ -72,17 +72,37 @@ fn overflow_drops_oldest() {
     let _guard = TEST_LOCK.lock().unwrap();
     clear_errors_for_test();
 
-    for i in 0..(MAX_ERROR_EVENTS + 10) {
+    let max_error_events = 50;
+    set_max_error_events(max_error_events);
+    for i in 0..(max_error_events + 10) {
         push_error(make_event(&format!("overflow_{i}")));
     }
 
     let all = peek_all_errors();
 
-    assert_eq!(all.len(), MAX_ERROR_EVENTS);
+    assert_eq!(all.len(), max_error_events);
 
     assert!(!all.iter().any(|e| e.message == "overflow_0"));
     assert!(!all.iter().any(|e| e.message == "overflow_9"));
 
     assert!(all.iter().any(|e| e.message == "overflow_10"));
     assert!(all.iter().any(|e| e.message == "overflow_59"));
+}
+
+#[test]
+fn lowering_limit_trims_existing_events_immediately() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    clear_errors_for_test();
+    set_max_error_events(5);
+    for i in 0..5 {
+        push_error(make_event(&format!("trim_{i}")));
+    }
+
+    set_max_error_events(2);
+    let all = peek_all_errors();
+
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].message, "trim_4");
+    assert_eq!(all[1].message, "trim_3");
+    set_max_error_events(50);
 }

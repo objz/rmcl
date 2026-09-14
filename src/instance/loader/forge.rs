@@ -49,6 +49,26 @@ impl ModLoaderInstaller for ForgeInstaller {
         instance_dir: &Path,
         meta_dir: &Path,
     ) -> Result<(), InstallError> {
+        self.install_with_java(
+            client,
+            game_version,
+            loader_version,
+            instance_dir,
+            meta_dir,
+            None,
+        )
+        .await
+    }
+
+    async fn install_with_java(
+        &self,
+        client: &HttpClient,
+        game_version: &str,
+        loader_version: &str,
+        instance_dir: &Path,
+        meta_dir: &Path,
+        java_path: Option<&str>,
+    ) -> Result<(), InstallError> {
         let installer_jar = instance_dir
             .join(crate::storage::MINECRAFT_DIR_NAME)
             .join("forge-installer.jar");
@@ -76,11 +96,14 @@ impl ModLoaderInstaller for ForgeInstaller {
             }
         } else {
             // modern forge: run the java installer
-            let java_path = crate::config::SETTINGS
-                .paths
-                .effective_java_path()
-                .map(str::to_owned)
-                .unwrap_or_else(crate::instance::java::detect_java_path);
+            let java_path = java_path.map(str::to_owned).unwrap_or_else(|| {
+                crate::config::SETTINGS
+                    .read()
+                    .paths
+                    .effective_java_path()
+                    .map(str::to_owned)
+                    .unwrap_or_else(crate::instance::java::detect_java_path)
+            });
             tracing::debug!("Running Forge installer with Java {}", java_path);
             if let Err(e) = run_forge_installer(&installer_jar, instance_dir, &java_path).await {
                 let _ = tokio::fs::remove_file(&installer_jar).await;

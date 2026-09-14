@@ -21,7 +21,7 @@ pub async fn handle_log(matches: &ArgMatches) -> CliResult {
 }
 
 fn list_logs(instance: &str) -> CliResult {
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
     require_instance(&instances_dir, instance)?;
     let rows = crate::instance::logs::files::scan_log_files(&instances_dir, instance)
         .into_iter()
@@ -41,7 +41,7 @@ async fn show_log(matches: &ArgMatches) -> CliResult {
     let instance = required_arg(matches, "instance")?;
     let file = matches.get_one::<String>("file").map(String::as_str);
     let follow = matches.get_flag("follow");
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
     require_instance(&instances_dir, instance)?;
     let path = resolve_log_path(&instances_dir, instance, file)?;
 

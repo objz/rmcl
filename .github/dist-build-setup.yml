@@ -3,3 +3,6 @@
   with:
     distribution: temurin
     java-version: "21"
+- name: install Linux build dependencies
+  if: runner.os == 'Linux'
+  run: sudo apt-get update && sudo apt-get install --yes libxcb1-dev

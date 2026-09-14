@@ -49,7 +49,8 @@ pub async fn show() -> color_eyre::Result<()> {
         let mut picker = ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
         let detected_protocol = picker.protocol_type();
-        let requested_protocol = match crate::config::SETTINGS.ui.image_protocol {
+        let requested_protocol = match crate::config::SETTINGS.read().ui.image_protocol {
+            crate::config::settings::ImageProtocol::Auto => detected_protocol,
             crate::config::settings::ImageProtocol::Halfblocks
             | crate::config::settings::ImageProtocol::Quadrants => {
                 ratatui_image::picker::ProtocolType::Halfblocks
@@ -68,14 +69,14 @@ pub async fn show() -> color_eyre::Result<()> {
         };
         picker.set_protocol_type(requested_protocol);
 
-        let mut app = app::App::new(picker);
+        let mut app = app::App::new(picker, detected_protocol);
         match run_layout_migration_screen(&mut terminal, &mut app).await? {
             MigrationScreenOutcome::NotNeeded => {}
             MigrationScreenOutcome::Migrated => {
                 // the modal uses pre-migration state as its background. rebuild the
                 // app after confirmation so no instance or profile data stays stale
                 let picker = app.into_picker();
-                app = app::App::new(picker);
+                app = app::App::new(picker, detected_protocol);
             }
             MigrationScreenOutcome::Quit => return Ok(()),
         }
@@ -106,13 +107,20 @@ async fn run_layout_migration_screen(
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-    let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+    let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
+    let config = crate::config::get_config_path().join("config.toml");
     if !crate::layout_migration::is_needed(&instances_dir, &meta_dir) {
         crate::layout_migration::initialize_new_layout(&meta_dir)?;
+        if let Err(error) = crate::config::upgrade_config_file(&config) {
+            tracing::warn!("Could not upgrade launcher config: {error}");
+            crate::feedback::errors::push_message(
+                tracing::Level::ERROR,
+                format!("Could not upgrade config.toml: {error}"),
+            );
+        }
         return Ok(MigrationScreenOutcome::NotNeeded);
     }
-    let config = crate::config::get_config_path().join("config.toml");
 
     loop {
         let progress = Arc::new(Mutex::new(crate::layout_migration::MigrationProgress {

@@ -542,7 +542,7 @@ impl ContentListState {
 
         let use_image_protocol =
             picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks;
-        let use_quadrants = crate::config::SETTINGS.ui.image_protocol
+        let use_quadrants = crate::config::SETTINGS.read().ui.image_protocol
             == crate::config::settings::ImageProtocol::Quadrants;
         if !use_image_protocol {
             self.image_protocols.clear();
@@ -1685,10 +1685,7 @@ pub fn render(
                     theme.success()
                 }
             });
-        let title_suffix_style = Style::default()
-            .fg(theme.background())
-            .bg(title_suffix_color)
-            .add_modifier(Modifier::BOLD);
+        let title_suffix_style = crate::tui::widgets::status_badge_style(title_suffix_color);
         let footer_label_style = Style::default().fg(if world_details.is_some() {
             theme.text_dim()
         } else {

@@ -31,3 +31,16 @@ fn build_content_linux_with_icon() {
     let content = build_content("TestPack", Some(&icon));
     assert!(content.contains("Icon=/tmp/icon.png"));
 }
+
+#[test]
+fn shortcut_arguments_escape_platform_metacharacters() {
+    assert_eq!(
+        quote_desktop_exec_arg("Pack \"$HOME`\\"),
+        "\"Pack \\\"\\$HOME\\`\\\\\""
+    );
+    assert_eq!(quote_shell_arg("Pack 'quoted'"), "'Pack '\\''quoted'\\'''");
+    assert_eq!(
+        quote_windows_arg("Pack \\\"quoted"),
+        "\"Pack \\\\\\\"quoted\""
+    );
+}

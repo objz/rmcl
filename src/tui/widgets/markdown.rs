@@ -1651,7 +1651,7 @@ fn render_image(
         width: area.width,
         height: full_height,
         protocol: picker.protocol_type(),
-        mode: crate::config::SETTINGS.ui.image_protocol,
+        mode: crate::config::SETTINGS.read().ui.image_protocol,
     };
     if image
         .prepared

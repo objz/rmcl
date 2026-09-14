@@ -146,13 +146,17 @@ pub fn render(frame: &mut Frame, state: &State) {
             Action::Reinstall => (" Reinstalling modpack ", " Please wait "),
         },
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .title(title)
-        .title_bottom(Line::from(footer).centered())
         .borders(Borders::ALL)
         .border_type(BORDER_STYLE.to_border_type())
         .border_style(Style::default().fg(theme.accent()))
         .style(Style::default().fg(theme.text()).bg(theme.surface()));
+    if state.phase == Phase::Applying
+        || super::shortcut_hints_visible(crate::config::settings::ShortcutHintScope::Popups)
+    {
+        block = block.title_bottom(Line::from(footer).centered());
+    }
     match state.phase {
         Phase::Preparing => frame.render_widget(
             Paragraph::new(format!("Preparing the selected modpack {action}…")).block(block),

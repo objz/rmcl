@@ -129,6 +129,39 @@ settings, accounts, instances, and cached game metadata.
 
 each instance has an `instance.json` for its config and a `.minecraft/` directory with the actual game files.
 
+Launcher settings can be edited from the TUI or in `config.toml`. Changes to
+`instances_dir`, `meta_dir`, and `image_protocol` apply after restarting rmcl;
+other launcher settings apply immediately. Omitting `java_path` enables automatic
+Java selection. Global JVM arguments and environment variables are applied before
+per-instance values. Instances can explicitly inherit the launcher window mode
+and resolution defaults.
+
+```toml
+[general]
+check_modpack_updates = true
+check_content_updates = true
+
+[defaults]
+memory_min = "512M"
+memory_max = "2G"
+jvm_args = []
+environment = {}
+window_mode = "windowed"
+resolution = [854, 480]
+
+[ui]
+image_protocol = "auto"
+hidden_shortcut_hints = [] # all, main, instances, content, accounts, settings, popups
+
+[content]
+preferred_provider = "modrinth"
+preferred_provider_only = false
+ask_on_provider_conflict = true
+```
+
+Use `hidden_shortcut_hints = ["main"]` to keep only popup guides,
+`["all"]` to hide every guide, or list individual areas to hide them selectively.
+
 ### logs
 
 launcher logs are per-session and contain rmcl's own output. instance launch logs capture game stdout/stderr per launch.

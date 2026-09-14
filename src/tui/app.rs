@@ -19,6 +19,11 @@ use crate::instance::{InstanceConfig, InstanceManager};
 // so the main loop can pick them up without blocking
 pub(super) static PENDING_INSTANCES: LazyLock<Arc<Mutex<Vec<InstanceConfig>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+pub(super) static COMPLETED_INSTANCE_SETTINGS_UPDATES: LazyLock<Arc<Mutex<Vec<InstanceConfig>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+pub(super) static FAILED_INSTANCE_SETTINGS_UPDATES: LazyLock<Arc<Mutex<Vec<String>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+pub(super) const RUNTIME_UPDATE_PENDING_MESSAGE: &str = "Wait for the runtime update to finish";
 
 pub struct App {
     pub(super) exit: bool,
@@ -42,7 +47,11 @@ pub struct App {
     pub(super) logs_state: widgets::logs_viewer::LogsState,
     pub(super) account_state: widgets::account::AccountState,
     pub(super) settings_state: widgets::settings::SettingsState,
+    pub(super) instance_settings: Option<widgets::popups::instance_settings::State>,
+    pub(super) pending_instance_settings_updates: HashSet<String>,
+    pub(super) global_settings: Option<widgets::popups::global_settings::State>,
     pub(super) picker: ratatui_image::picker::Picker,
+    pub(super) detected_image_protocol: ratatui_image::picker::ProtocolType,
     pub(super) instance_manager: InstanceManager,
     pub(super) log_overlay_scroll: usize,
     pub(super) log_overlay_max_scroll: usize,
@@ -89,6 +98,8 @@ pub enum FocusedArea {
     ImportPopup,
     ErrorPopup,
     ConfirmDelete,
+    InstanceSettings,
+    GlobalSettings,
 }
 
 impl App {
@@ -114,15 +125,19 @@ impl App {
         supported
     }
 
-    pub fn new(picker: ratatui_image::picker::Picker) -> Self {
-        let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-        let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    pub fn new(
+        picker: ratatui_image::picker::Picker,
+        detected_image_protocol: ratatui_image::picker::ProtocolType,
+    ) -> Self {
+        let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+        let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
 
         let _ = std::fs::create_dir_all(&instances_dir);
         let _ = std::fs::create_dir_all(&meta_dir);
         crate::instance::import::refresh::recover_interrupted(&instances_dir);
 
         let manager = InstanceManager::new(instances_dir, meta_dir);
+        let settings_state = widgets::settings::SettingsState::new(manager.meta_dir.clone());
         let instances = manager.load_all();
         instances::spawn_modpack_update_checks(&instances);
         let instances_state = instances::State::with_instances(instances);
@@ -169,7 +184,10 @@ impl App {
             world_quick_play_support: None,
             logs_state: widgets::logs_viewer::LogsState::default(),
             account_state: widgets::account::AccountState::default(),
-            settings_state: widgets::settings::SettingsState::new(manager.meta_dir.clone()),
+            settings_state,
+            instance_settings: None,
+            pending_instance_settings_updates: HashSet::new(),
+            global_settings: None,
             screenshots_state: {
                 let mut s = widgets::screenshots_grid::ScreenshotsState::default();
                 let font_size = picker.font_size();
@@ -177,6 +195,7 @@ impl App {
                 s
             },
             picker,
+            detected_image_protocol,
             instance_manager: manager,
             log_overlay_scroll: 0,
             log_overlay_max_scroll: 0,

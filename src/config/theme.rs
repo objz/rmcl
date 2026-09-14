@@ -6,7 +6,7 @@
 // config/theme/ directory or by absolute path.
 
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use ratatui::style::Color;
 use ratatui::widgets::BorderType;
@@ -34,7 +34,7 @@ impl BorderStyle {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ThemeOverrides {
     pub accent: Option<Color>,
     pub accent_dim: Option<Color>,
@@ -53,7 +53,7 @@ pub struct ThemeOverrides {
     pub background: Option<Color>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default)]
     pub border_style: BorderStyle,
@@ -167,12 +167,136 @@ fn load_base_theme(name: &str) -> Box<dyn Theme> {
     resolve_theme(name)
 }
 
-static THEME_CONFIG: LazyLock<ThemeConfig> = LazyLock::new(load_theme_config);
+pub struct ThemeStore(RwLock<Arc<dyn Theme>>);
 
-pub static THEME: LazyLock<Box<dyn Theme>> = LazyLock::new(|| resolve_app_theme(&THEME_CONFIG));
+impl ThemeStore {
+    pub fn as_ref(&self) -> Arc<dyn Theme> {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 
-pub static BORDER_STYLE: LazyLock<BorderStyle> =
-    LazyLock::new(|| THEME_CONFIG.border_style.clone());
+    fn set(&self, theme: Box<dyn Theme>) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::from(theme);
+    }
+}
+
+pub struct BorderStyleStore(RwLock<BorderStyle>);
+
+impl BorderStyleStore {
+    pub fn to_border_type(&self) -> BorderType {
+        self.current().to_border_type()
+    }
+
+    pub fn current(&self) -> BorderStyle {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set(&self, style: BorderStyle) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = style;
+    }
+}
+
+static THEME_CONFIG: LazyLock<RwLock<ThemeConfig>> =
+    LazyLock::new(|| RwLock::new(load_theme_config()));
+
+pub static THEME: LazyLock<ThemeStore> = LazyLock::new(|| {
+    let config = THEME_CONFIG
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ThemeStore(RwLock::new(Arc::from(resolve_app_theme(&config))))
+});
+
+pub static BORDER_STYLE: LazyLock<BorderStyleStore> = LazyLock::new(|| {
+    let config = THEME_CONFIG
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    BorderStyleStore(RwLock::new(config.border_style.clone()))
+});
+
+pub fn current_theme_config() -> ThemeConfig {
+    THEME_CONFIG
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+pub fn apply_theme(theme: String, border_style: BorderStyle) -> std::io::Result<()> {
+    validate_theme_name(&theme)?;
+    let mut config = current_theme_config();
+    config.theme = theme;
+    config.border_style = border_style.clone();
+    super::write_merged_toml_document(
+        &super::get_config_path().join("theme.toml"),
+        &config,
+        |document| {
+            if config.custom.is_none() {
+                document.as_table_mut().remove("custom");
+            }
+        },
+    )?;
+    THEME.set(resolve_app_theme(&config));
+    BORDER_STYLE.set(border_style);
+    *THEME_CONFIG
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+    crate::feedback::request_redraw();
+    Ok(())
+}
+
+fn validate_theme_name(name: &str) -> std::io::Result<()> {
+    if ratatui_themekit::available_theme_ids().contains(&name) {
+        return Ok(());
+    }
+    let path = if Path::new(name).is_absolute() {
+        std::path::PathBuf::from(name)
+    } else {
+        let directory = super::get_config_path().join("theme");
+        let direct = directory.join(name);
+        if direct.exists() {
+            direct
+        } else {
+            directory.join(format!("{name}.toml"))
+        }
+    };
+    let content = std::fs::read_to_string(&path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("failed to load theme {}: {error}", path.display()),
+        )
+    })?;
+    toml::from_str::<CustomTheme>(&content).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid theme {}: {error}", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
+pub fn reload_theme() -> std::io::Result<()> {
+    let path = super::get_config_path().join("theme.toml");
+    let content = std::fs::read_to_string(path)?;
+    let config: ThemeConfig = toml::from_str(&content)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    THEME.set(resolve_app_theme(&config));
+    BORDER_STYLE.set(config.border_style.clone());
+    *THEME_CONFIG
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+    crate::feedback::request_redraw();
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "tests/theme.rs"]

@@ -42,6 +42,14 @@ fn crashed_state_stores_exit_code() {
 }
 
 #[test]
+fn crashed_instances_are_not_active() {
+    set_state("run_test_inactive_crash", RunState::Crashed(Some(1)));
+    assert!(!is_active("run_test_inactive_crash"));
+    set_state("run_test_active_start", RunState::Starting);
+    assert!(is_active("run_test_active_start"));
+}
+
+#[test]
 fn push_and_drain_last_played() {
     let time = Utc::now();
     push_last_played("run_test_lp", time);

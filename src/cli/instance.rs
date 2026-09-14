@@ -11,7 +11,7 @@ use clap::ArgMatches;
 use super::utils::{confirm, required_arg};
 use crate::cli::output::{format_datetime, print_table};
 use crate::instance::runtime::RunState;
-use crate::instance::{InstanceManager, ModLoader};
+use crate::instance::{InstanceManager, ModLoader, models::parse_resolution};
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
 const LOCAL_CONFIG_PROFILE: &str = "instance default";
@@ -44,27 +44,9 @@ pub(crate) fn parse_loader(input: &str) -> Result<ModLoader, String> {
     }
 }
 
-pub(crate) fn parse_resolution(input: &str) -> Result<(u32, u32), String> {
-    let (width, height) = input
-        .split_once('x')
-        .ok_or_else(|| "resolution must be in WxH format".to_string())?;
-    let width = width
-        .parse::<u32>()
-        .map_err(|_| "resolution width must be a positive integer".to_string())?;
-    let height = height
-        .parse::<u32>()
-        .map_err(|_| "resolution height must be a positive integer".to_string())?;
-
-    if width == 0 || height == 0 {
-        return Err("resolution values must be greater than zero".to_string());
-    }
-
-    Ok((width, height))
-}
-
 fn manager() -> InstanceManager {
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-    let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+    let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
     InstanceManager::new(instances_dir, meta_dir)
 }
 
@@ -135,8 +117,8 @@ fn rename_instance(matches: &ArgMatches) -> CliResult {
 async fn launch_instance(matches: &ArgMatches) -> CliResult {
     let name = required_arg(matches, "name")?;
     let manager = manager();
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
-    let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
+    let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
     let config = manager.load_one(name)?;
 
     crate::instance::launch::launch(&config, &instances_dir, &meta_dir, None)

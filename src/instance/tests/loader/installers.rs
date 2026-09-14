@@ -66,6 +66,51 @@ fn save_installer_profile_copies_raw_bytes_verbatim() {
     );
 }
 
+#[test]
+fn save_installer_profile_rejects_invalid_json_without_overwriting_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instance_dir = tmp.path().join("instance");
+    let meta_dir = tmp.path().join("meta");
+    let version_name = "1.20.1-forge-broken";
+    let version_dir = instance_dir
+        .join(crate::storage::MINECRAFT_DIR_NAME)
+        .join("versions")
+        .join(version_name);
+    std::fs::create_dir_all(&version_dir).unwrap();
+    std::fs::write(
+        version_dir.join(format!("{version_name}.json")),
+        b"not json",
+    )
+    .unwrap();
+    let cached = crate::storage::MetadataPaths::new(&meta_dir)
+        .loader_profiles()
+        .join("forge-broken.json");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, b"previous").unwrap();
+
+    assert!(
+        save_installer_profile(&instance_dir, &meta_dir, version_name, "forge-broken.json")
+            .is_err()
+    );
+    assert_eq!(std::fs::read(cached).unwrap(), b"previous");
+}
+
+#[rstest::rstest]
+#[case(ModLoader::Vanilla, None)]
+#[case(ModLoader::Fabric, Some("fabric-1.21.1-1.0.json"))]
+#[case(ModLoader::Quilt, Some("quilt-1.21.1-1.0.json"))]
+#[case(ModLoader::Forge, Some("forge-1.21.1-1.0.json"))]
+#[case(ModLoader::NeoForge, Some("neoforge-1.0.json"))]
+fn profile_filenames_match_launch_cache_names(
+    #[case] loader: ModLoader,
+    #[case] expected: Option<&str>,
+) {
+    assert_eq!(
+        profile_filename(loader, "1.21.1", "1.0").as_deref(),
+        expected
+    );
+}
+
 // shape-pinning test: a synthetic versionInfo from a 1.7.10 forge
 // install_profile.json must deserialise as a LaunchProfile so the
 // launch flow's render_args + resolve pipeline can consume it. no

@@ -10,7 +10,10 @@ use ratatui::{
 use std::time::Duration;
 
 use super::Tui;
-use super::app::{App, FocusedArea, PENDING_INSTANCES};
+use super::app::{
+    App, COMPLETED_INSTANCE_SETTINGS_UPDATES, FAILED_INSTANCE_SETTINGS_UPDATES, FocusedArea,
+    PENDING_INSTANCES, RUNTIME_UPDATE_PENDING_MESSAGE,
+};
 use super::widgets::{self, popups::import_modpack, popups::new_instance};
 use crate::feedback::errors as error_buffer;
 use crate::feedback::progress;
@@ -43,6 +46,8 @@ impl App {
             // every content type has its own pending queue because they each
             // get scanned/loaded on separate tokio tasks
             self.drain_pending_instances();
+            self.drain_completed_instance_settings_updates();
+            self.drain_failed_instance_settings_updates();
             self.instances_state.drain_modpack_updates();
             self.drain_pending_last_played();
             if let Some(state) = self.modpack_versions_state.as_mut() {
@@ -209,6 +214,8 @@ impl App {
             + usize::from(self.instances_state.show_import_popup)
             + usize::from(self.focused == super::app::FocusedArea::OverviewExpanded)
             + usize::from(self.focused == super::app::FocusedArea::ConfirmDelete)
+            + usize::from(self.focused == super::app::FocusedArea::InstanceSettings)
+            + usize::from(self.focused == super::app::FocusedArea::GlobalSettings)
             + usize::from(self.provider_conflict.is_some())
             + usize::from(
                 self.content_update_popup
@@ -415,7 +422,7 @@ impl App {
             cached.map(|snapshot| (result.instance_name.clone(), snapshot));
         self.content_manifest = Some((result.instance_name.clone(), result.manifest.clone()));
         self.apply_content_update_snapshot();
-        if stale {
+        if stale && crate::config::SETTINGS.read().general.check_content_updates {
             crate::instance::content::updates::spawn(
                 selected,
                 result.manifest,
@@ -505,7 +512,10 @@ impl App {
     }
 
     fn ensure_provider_conflict_popup(&mut self) {
-        if !crate::config::SETTINGS.content.ask_on_provider_conflict
+        if !crate::config::SETTINGS
+            .read()
+            .content
+            .ask_on_provider_conflict
             || self.focused != super::app::FocusedArea::Content
             || self.provider_conflict.is_some()
         {
@@ -569,7 +579,7 @@ impl App {
 
     fn spawn_create(&self, params: new_instance::WizardParams) {
         let instances_dir = self.instance_manager.instances_dir.clone();
-        let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+        let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
         let pending_instances = PENDING_INSTANCES.clone();
 
         tokio::spawn(async move {
@@ -605,9 +615,63 @@ impl App {
         });
     }
 
+    pub(super) fn spawn_instance_settings_update(
+        &self,
+        previous: crate::instance::InstanceConfig,
+        mut updated: crate::instance::InstanceConfig,
+        desktop: bool,
+    ) {
+        let instances_dir = self.instance_manager.instances_dir.clone();
+        let meta_dir = self.instance_manager.meta_dir.clone();
+        let completed_updates = COMPLETED_INSTANCE_SETTINGS_UPDATES.clone();
+
+        tokio::spawn(async move {
+            progress::set_action(format!("Updating instance '{}'...", updated.name));
+            progress::set_sub_action(format!("{} {}", updated.game_version, updated.loader));
+            let manager = InstanceManager::new(&instances_dir, &meta_dir);
+            updated = match apply_instance_settings_update(&manager, &previous, updated).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    progress::clear();
+                    if let Ok(mut failed) = FAILED_INSTANCE_SETTINGS_UPDATES.lock() {
+                        failed.push(previous.name.clone());
+                    }
+                    error_buffer::push_error(error_buffer::ErrorEvent {
+                        id: 0,
+                        level: tracing::Level::ERROR,
+                        message: format!("Failed to update instance '{}': {error}", previous.name),
+                        pushed_at: std::time::Instant::now(),
+                    });
+                    return;
+                }
+            };
+
+            let shortcut_result = crate::instance::desktop::set_enabled(&updated, desktop);
+            if let Err(error) = shortcut_result {
+                error_buffer::push_error(error_buffer::ErrorEvent {
+                    id: 0,
+                    level: tracing::Level::ERROR,
+                    message: format!("Instance saved, but shortcut update failed: {error}"),
+                    pushed_at: std::time::Instant::now(),
+                });
+            }
+            if let Ok(mut pending) = completed_updates.lock() {
+                pending.push(updated);
+            }
+            progress::clear();
+            error_buffer::push_error(error_buffer::ErrorEvent {
+                id: 0,
+                level: tracing::Level::INFO,
+                message: format!("Updated instance '{}'", previous.name),
+                pushed_at: std::time::Instant::now(),
+            });
+            crate::feedback::request_redraw();
+        });
+    }
+
     fn spawn_import(&self, result: import_modpack::ImportResult) {
         let instances_dir = self.instance_manager.instances_dir.clone();
-        let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+        let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
         let pending_instances = PENDING_INSTANCES.clone();
 
         tokio::spawn(async move {
@@ -689,8 +753,53 @@ impl App {
     }
 
     fn reload_edited_config(&mut self, path: &std::path::Path) {
-        if path.file_name().and_then(|n| n.to_str()) != Some("instance.json") {
-            return;
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("config.toml") => {
+                match crate::config::SETTINGS.reload() {
+                    Ok(outcome) => {
+                        if outcome.provider_changed {
+                            self.reset_discovery_states();
+                        }
+                        if outcome.modpack_updates_enabled {
+                            widgets::instances::spawn_modpack_update_checks(
+                                &self.instances_state.instances,
+                            );
+                        }
+                        if outcome.content_updates_enabled {
+                            self.spawn_selected_content_update_check();
+                        }
+                        if outcome.restart_required {
+                            error_buffer::push_error(error_buffer::ErrorEvent {
+                                id: 0,
+                                level: tracing::Level::INFO,
+                                message: "Path and image protocol changes apply after restart"
+                                    .to_owned(),
+                                pushed_at: std::time::Instant::now(),
+                            });
+                        }
+                    }
+                    Err(error) => error_buffer::push_error(error_buffer::ErrorEvent {
+                        id: 0,
+                        level: tracing::Level::ERROR,
+                        message: format!("Failed to reload config.toml: {error}"),
+                        pushed_at: std::time::Instant::now(),
+                    }),
+                }
+                return;
+            }
+            Some("theme.toml") => {
+                if let Err(error) = crate::config::theme::reload_theme() {
+                    error_buffer::push_error(error_buffer::ErrorEvent {
+                        id: 0,
+                        level: tracing::Level::ERROR,
+                        message: format!("Failed to reload theme.toml: {error}"),
+                        pushed_at: std::time::Instant::now(),
+                    });
+                }
+                return;
+            }
+            Some("instance.json") => {}
+            _ => return,
         }
 
         let Some(name) = path
@@ -724,6 +833,14 @@ impl App {
     ) {
         use crate::instance::launch;
         use crate::instance::runtime;
+
+        if self
+            .pending_instance_settings_updates
+            .contains(&instance.name)
+        {
+            error_buffer::push_message(tracing::Level::WARN, RUNTIME_UPDATE_PENDING_MESSAGE);
+            return;
+        }
 
         let instance = match self.instance_manager.load_one(&instance.name) {
             Ok(config) => config,
@@ -776,7 +893,7 @@ impl App {
             match error_buffer::peek_error() {
                 Some(event)
                     if event.pushed_at.elapsed().as_millis()
-                        >= SETTINGS.ui.error_auto_dismiss_ms as u128 =>
+                        >= SETTINGS.read().ui.error_auto_dismiss_ms as u128 =>
                 {
                     let _ = error_buffer::pop_error();
                 }
@@ -786,11 +903,73 @@ impl App {
     }
 
     fn drain_pending_instances(&mut self) {
-        if let Ok(mut pending) = PENDING_INSTANCES.lock() {
-            for config in pending.drain(..) {
-                self.forget_instance_content(&config.name);
-                widgets::instances::spawn_modpack_update_check(&config);
-                self.instances_state.add_instance(config);
+        let pending = PENDING_INSTANCES
+            .lock()
+            .map(|mut pending| pending.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for config in pending {
+            self.apply_pending_instance(config, false);
+        }
+    }
+
+    fn drain_completed_instance_settings_updates(&mut self) {
+        let completed = COMPLETED_INSTANCE_SETTINGS_UPDATES
+            .lock()
+            .map(|mut pending| pending.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for config in completed {
+            self.apply_pending_instance(config, true);
+        }
+    }
+
+    fn apply_pending_instance(
+        &mut self,
+        config: crate::instance::InstanceConfig,
+        settings_update: bool,
+    ) {
+        let config = self
+            .instance_manager
+            .load_one(&config.name)
+            .unwrap_or(config);
+        if settings_update {
+            self.pending_instance_settings_updates.remove(&config.name);
+            if let Some(state) = self.instance_settings.as_mut()
+                && state.runtime_update_pending_for(&config.name)
+            {
+                let desktop = crate::instance::desktop::exists(&config.name);
+                state.mark_saved(&config, desktop);
+            }
+        }
+        self.forget_instance_content(&config.name);
+        widgets::instances::spawn_modpack_update_check(&config);
+        if self
+            .instances_state
+            .instances
+            .iter()
+            .any(|instance| instance.name == config.name)
+        {
+            let name = config.name.clone();
+            self.instances_state.replace_instance(&name, config);
+        } else {
+            self.instances_state.add_instance(config);
+        }
+    }
+
+    fn drain_failed_instance_settings_updates(&mut self) {
+        let failed = FAILED_INSTANCE_SETTINGS_UPDATES
+            .lock()
+            .map(|mut failed| failed.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for name in failed {
+            self.pending_instance_settings_updates.remove(&name);
+            let remaining = self.instance_settings.as_mut().and_then(|state| {
+                state
+                    .runtime_update_pending_for(&name)
+                    .then(|| state.cancel_runtime_change())
+                    .flatten()
+            });
+            if let Some((updated, desktop)) = remaining {
+                self.apply_instance_settings(*updated, desktop);
             }
         }
     }
@@ -838,6 +1017,56 @@ impl App {
             self.screenshots_state.set_protocol(idx, proto);
         }
     }
+}
+
+async fn apply_instance_settings_update(
+    manager: &InstanceManager,
+    previous: &crate::instance::InstanceConfig,
+    mut updated: crate::instance::InstanceConfig,
+) -> color_eyre::Result<crate::instance::InstanceConfig> {
+    manager.repair_runtime_cache(&updated).await?;
+
+    if crate::instance::runtime::is_active(&previous.name) {
+        color_eyre::eyre::bail!("instance started while its runtime was being updated");
+    }
+
+    let current = manager.load_one(&previous.name)?;
+    updated = merge_instance_settings(previous, &updated, current);
+    manager.save(&updated)?;
+
+    Ok(updated)
+}
+
+pub(super) fn merge_instance_settings(
+    previous: &crate::instance::InstanceConfig,
+    updated: &crate::instance::InstanceConfig,
+    mut current: crate::instance::InstanceConfig,
+) -> crate::instance::InstanceConfig {
+    macro_rules! apply_changed {
+        ($field:ident) => {
+            if previous.$field != updated.$field {
+                current.$field.clone_from(&updated.$field);
+            }
+        };
+    }
+
+    apply_changed!(game_version);
+    apply_changed!(loader);
+    apply_changed!(loader_version);
+    apply_changed!(java_path);
+    apply_changed!(memory_max);
+    apply_changed!(memory_min);
+    apply_changed!(jvm_args);
+    apply_changed!(environment);
+    apply_changed!(window_mode);
+    apply_changed!(inherit_window_mode);
+    apply_changed!(resolution);
+    apply_changed!(inherit_resolution);
+    apply_changed!(preferred_account);
+    apply_changed!(pre_launch_command);
+    apply_changed!(post_exit_command);
+    apply_changed!(glfw_path);
+    current
 }
 
 fn mark_terminal_images(buffer: &mut Buffer, alternate: bool) {

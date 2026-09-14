@@ -509,33 +509,34 @@ fn render_list(frame: &mut Frame, area: Rect, state: &mut LogsState, is_focused:
         })
         .collect();
     let search = &state.search;
+    let success = theme.success();
+    let accent = theme.accent();
+    let text = theme.text();
+    let background = theme.background();
+    let stripe = theme.stripe();
 
     let builder = ListBuilder::new(move |context| {
         let (name, is_live) = &entries_snapshot[context.index];
         let show_selected = list_focused && context.is_selected;
 
         let style = if *is_live && show_selected {
-            Style::default()
-                .fg(theme.success())
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(success).add_modifier(Modifier::BOLD)
         } else if *is_live {
-            Style::default().fg(theme.success())
+            Style::default().fg(success)
         } else if show_selected {
-            Style::default()
-                .fg(theme.accent())
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.text())
+            Style::default().fg(text)
         };
 
         let bg = if context.index % 2 == 0 {
-            theme.background()
+            background
         } else {
-            theme.stripe()
+            stripe
         };
 
         let selector = if show_selected {
-            Span::styled("\u{258c} ", Style::default().fg(theme.accent()))
+            Span::styled("\u{258c} ", Style::default().fg(accent))
         } else {
             Span::raw("  ")
         };

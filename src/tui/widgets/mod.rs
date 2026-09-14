@@ -6,7 +6,7 @@
 use crate::config::theme::THEME;
 use crossterm::event::KeyEvent;
 use ratatui::{
-    style::Style,
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
@@ -36,6 +36,17 @@ pub fn styled_title(title: &str, highlight: bool) -> Line<'_> {
             Span::styled(rest, Style::default().fg(theme.text())),
         ])
     }
+}
+
+pub(crate) fn status_badge_style(color: Color) -> Style {
+    Style::default()
+        .fg(THEME.as_ref().background())
+        .bg(color)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub(crate) fn status_badge(label: impl Into<String>, color: Color) -> Span<'static> {
+    Span::styled(format!(" {} ", label.into()), status_badge_style(color))
 }
 
 pub trait WidgetKey {

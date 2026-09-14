@@ -68,7 +68,7 @@ pub(crate) fn find_entry_by_stem<'a>(
 }
 
 fn list_entries(instance: &str, scan: Scanner) -> CliResult {
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
     require_instance(&instances_dir, instance)?;
     let rows = scan(&instances_dir, instance)
         .into_iter()
@@ -95,7 +95,7 @@ fn toggle_entry(
     kind: &str,
     scan: Scanner,
 ) -> CliResult {
-    let instances_dir = crate::config::SETTINGS.paths.resolve_instances_dir();
+    let instances_dir = crate::config::SETTINGS.read().paths.resolve_instances_dir();
     require_instance(&instances_dir, instance)?;
     let entries = scan(&instances_dir, instance);
     let entry = find_entry_by_stem(&entries, target)

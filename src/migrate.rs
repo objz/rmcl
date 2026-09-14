@@ -27,6 +27,13 @@ pub fn run_legacy_rename() {
     if let (Some(desk), Some(data)) = (dirs::desktop_dir(), dirs_next::data_dir()) {
         rewrite_native_desktop_shortcuts(&desk, &data.join(NEW_NAME).join("instances"));
     }
+    if let (Some(config_dir), Some(data_dir)) = (dirs_next::config_dir(), dirs_next::data_dir())
+        && !data_dir.join(OLD_NAME).exists()
+        && let Err(error) =
+            crate::config::migrate_legacy_data_paths(&config_dir.join(NEW_NAME).join("config.toml"))
+    {
+        eprintln!("rmcl migration: failed to update legacy config paths: {error}");
+    }
 }
 
 fn rename_top_level(old: &Path, new: &Path) {

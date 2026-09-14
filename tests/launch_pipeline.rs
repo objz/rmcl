@@ -56,7 +56,15 @@ fn make_config_with(
         memory_max: None,
         memory_min: None,
         jvm_args: Vec::new(),
+        environment: Default::default(),
+        window_mode: Default::default(),
+        inherit_window_mode: false,
         resolution: None,
+        inherit_resolution: false,
+        preferred_account: None,
+        pre_launch_command: Default::default(),
+        post_exit_command: Default::default(),
+        glfw_path: None,
         config_sync_profile: None,
         modpack_source: None,
     }
@@ -661,6 +669,38 @@ async fn xms_xmx_use_config_memory() {
 
     assert!(inv.jvm_args.iter().any(|a| a == "-Xms1G"));
     assert!(inv.jvm_args.iter().any(|a| a == "-Xmx4G"));
+}
+
+#[tokio::test]
+async fn instance_launch_options_are_injected() {
+    let fx = Fixture::new("options", "1.20.1", modern_vanilla_meta("1.20.1"));
+    let mut config = make_config("options", "1.20.1", ModLoader::Vanilla);
+    config.window_mode = rmcl::instance::WindowMode::Fullscreen;
+    config.glfw_path = Some("/usr/lib/libglfw.so.3".to_owned());
+    config
+        .environment
+        .insert("MESA_LOADER_DRIVER_OVERRIDE".to_owned(), "zink".to_owned());
+
+    let inv = build_launch_invocation(&config, &fx.instances_dir, &fx.meta_dir, &test_auth(), None)
+        .await
+        .unwrap();
+
+    assert!(
+        inv.game_args
+            .iter()
+            .any(|argument| argument == "--fullscreen")
+    );
+    assert!(
+        inv.jvm_args
+            .iter()
+            .any(|argument| argument == "-Dorg.lwjgl.glfw.libname=/usr/lib/libglfw.so.3")
+    );
+    assert_eq!(
+        inv.environment
+            .get("MESA_LOADER_DRIVER_OVERRIDE")
+            .map(String::as_str),
+        Some("zink")
+    );
 }
 
 #[tokio::test]

@@ -38,6 +38,13 @@ fn migration_backs_up_and_renames_instance_directories() {
         b"options"
     );
     assert!(backup.join("instances/Example/.minecraft").exists());
+    assert_eq!(
+        fs::read_to_string(backup.join("config/config.toml")).unwrap(),
+        "[paths]"
+    );
+    let upgraded_config = fs::read_to_string(&config).unwrap();
+    assert!(upgraded_config.contains("check_modpack_updates = true"));
+    assert!(upgraded_config.contains("resolution = [854, 480]"));
     assert!(backup.join("profiles/legacy/main/options.txt").exists());
     assert!(
         backup

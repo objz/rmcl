@@ -113,7 +113,7 @@ pub fn switch_profile(
     meta_dir: &Path,
     instance_dir: &Path,
 ) -> Result<Option<String>, ConfigSyncError> {
-    if crate::instance::runtime::get(instance_name).is_some() {
+    if crate::instance::runtime::is_active(instance_name) {
         return Err(ConfigSyncError::InstanceRunning {
             instance: instance_name.to_string(),
         });

@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // settings panel: manages config profiles and shows compact instance info.
-// also provides keybinds to open config files in $EDITOR.
+// detailed instance and launcher configuration opens in the TUI popups.
 
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -53,7 +50,6 @@ pub struct SettingsState {
     active_profile: Option<String>,
     instance_name: Option<String>,
     java_key: Option<String>,
-    java_source: Option<String>,
     java_label: String,
 }
 
@@ -72,7 +68,6 @@ impl SettingsState {
             active_profile: None,
             instance_name: None,
             java_key: None,
-            java_source: None,
             java_label: "unknown".to_string(),
         };
         state.select_active();
@@ -132,7 +127,6 @@ impl SettingsState {
                 .map(java_version_label)
                 .unwrap_or_else(|| "unknown".to_string());
             self.java_key = java_key;
-            self.java_source = java_source;
         }
     }
 }
@@ -151,39 +145,37 @@ fn java_path_key(instance: &InstanceConfig) -> String {
         .java_path
         .as_deref()
         .filter(|path| !path.is_empty())
-        .or_else(|| SETTINGS.paths.effective_java_path())
-        .unwrap_or("<auto>")
-        .to_string()
+        .map(str::to_owned)
+        .or_else(|| {
+            SETTINGS
+                .read()
+                .paths
+                .effective_java_path()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "<auto>".to_owned())
 }
 
 fn effective_java_path(instance: &InstanceConfig) -> String {
     instance
         .java_path
         .clone()
-        .or_else(|| SETTINGS.paths.effective_java_path().map(str::to_string))
+        .or_else(|| {
+            SETTINGS
+                .read()
+                .paths
+                .effective_java_path()
+                .map(str::to_owned)
+        })
         .unwrap_or_else(crate::instance::java::detect_java_path)
 }
 
 fn java_version_label(java_path: &str) -> String {
-    let output = Command::new(java_path).arg("-version").output();
-    let Ok(output) = output else {
+    let Some(version) = crate::instance::java::java_version(Path::new(java_path)) else {
         return "unknown".to_string();
     };
-    let raw = String::from_utf8_lossy(if output.stderr.is_empty() {
-        &output.stdout
-    } else {
-        &output.stderr
-    });
-    let first_line = raw.lines().next().unwrap_or_default();
-    let Some(version) = first_line.split('"').nth(1) else {
-        return "unknown".to_string();
-    };
-    let major = if let Some(stripped) = version.strip_prefix("1.") {
-        stripped.split('.').next().unwrap_or(stripped)
-    } else {
-        version.split('.').next().unwrap_or(version)
-    };
-    if major.is_empty() {
+    let major = crate::instance::java::java_major(Some(&version));
+    if major == 0 {
         "unknown".to_string()
     } else {
         format!("jdk{major}")
@@ -196,7 +188,6 @@ pub fn render(
     focused: FocusedArea,
     state: &mut SettingsState,
     instance: Option<&InstanceConfig>,
-    _instances_dir: &Path,
 ) {
     state.update_for_instance(instance);
 
@@ -224,14 +215,14 @@ pub fn render(
                 ("Esc", " back"),
             ],
             SettingsPane::Info => &[
-                ("e", " inst"),
-                ("g", " global"),
-                ("d", " desk"),
+                ("e", " instance"),
+                ("g", " launcher"),
                 ("h/l", " tab"),
                 ("Esc", " back"),
             ],
         };
         Some(super::popups::keybind_line_fitted(
+            crate::config::settings::ShortcutHintScope::Settings,
             keybinds,
             area.width.saturating_sub(2),
         ))
@@ -245,7 +236,13 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.width >= 42 {
+    if instance.is_none() {
+        frame.render_widget(
+            Paragraph::new("No instance selected.")
+                .style(Style::default().fg(THEME.as_ref().text_dim())),
+            inner,
+        );
+    } else if inner.width >= 42 {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -302,23 +299,24 @@ fn render_instance_info(
         return;
     };
 
+    let settings = SETTINGS.read();
     let memory_min = inst
         .memory_min
         .as_deref()
-        .unwrap_or(&SETTINGS.defaults.memory_min);
+        .unwrap_or(&settings.defaults.memory_min);
     let memory_max = inst
         .memory_max
         .as_deref()
-        .unwrap_or(&SETTINGS.defaults.memory_max);
+        .unwrap_or(&settings.defaults.memory_max);
     let active_style = if focused == FocusedArea::Settings && state.pane == SettingsPane::Info {
         value_style.fg(theme.accent())
     } else {
         value_style
     };
-    let desktop = if crate::instance::desktop::exists(&inst.name) {
-        "yes"
+    let shortcut = if crate::instance::desktop::exists(&inst.name) {
+        "enabled"
     } else {
-        "no"
+        "disabled"
     };
     let lines = vec![
         Line::from(vec![
@@ -330,8 +328,8 @@ fn render_instance_info(
             Span::styled(state.java_label.as_str(), active_style),
         ]),
         Line::from(vec![
-            Span::styled("Desktop  ", label_style),
-            Span::styled(desktop, active_style),
+            Span::styled("Shortcut ", label_style),
+            Span::styled(shortcut, active_style),
         ]),
     ];
 
@@ -460,9 +458,8 @@ fn popup_area(frame: &Frame, width: u16, height: u16) -> Rect {
 
 pub enum SettingsAction {
     None,
-    EditInstance(PathBuf),
-    EditGlobal(PathBuf),
-    ToggleDesktop,
+    OpenInstance,
+    OpenGlobal,
     SelectProfile(Option<String>),
     ConfirmDeleteProfile(String),
     Error(String),
@@ -472,7 +469,6 @@ pub fn handle_key(
     key_event: &KeyEvent,
     state: &mut SettingsState,
     instance: Option<&InstanceConfig>,
-    instances_dir: &Path,
 ) -> SettingsAction {
     if let AddMode::ProfileName(name) = &state.add_mode {
         match key_event.code {
@@ -558,18 +554,13 @@ pub fn handle_key(
             SettingsAction::None
         }
         KeyCode::Char('e') if state.pane == SettingsPane::Info => {
-            if let Some(inst) = instance {
-                let path = instances_dir.join(&inst.name).join("instance.json");
-                SettingsAction::EditInstance(path)
+            if instance.is_some() {
+                SettingsAction::OpenInstance
             } else {
                 SettingsAction::None
             }
         }
-        KeyCode::Char('g') if state.pane == SettingsPane::Info => {
-            let path = crate::config::get_config_path().join("config.toml");
-            SettingsAction::EditGlobal(path)
-        }
-        KeyCode::Char('d') if state.pane == SettingsPane::Info => SettingsAction::ToggleDesktop,
+        KeyCode::Char('g') if state.pane == SettingsPane::Info => SettingsAction::OpenGlobal,
         _ => SettingsAction::None,
     }
 }

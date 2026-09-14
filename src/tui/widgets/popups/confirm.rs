@@ -45,12 +45,45 @@ pub enum ConfirmTarget {
     OrphanDependencies {
         paths: Vec<std::path::PathBuf>,
     },
+    InstanceRuntime {
+        name: String,
+    },
+    LauncherCache,
+    AutomaticSelection {
+        setting: AutomaticSetting,
+        instance: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticSetting {
+    Java,
+    Account,
+}
+
+impl AutomaticSetting {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Java => " Enable automatic Java ",
+            Self::Account => " Enable automatic account ",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Java => "Use the automatically selected Java runtime",
+            Self::Account => "Use the currently active account",
+        }
+    }
 }
 
 impl ConfirmTarget {
     fn title(&self) -> String {
         match self {
             Self::OrphanDependencies { .. } => " Remove unused dependencies ".to_owned(),
+            Self::InstanceRuntime { .. } => " Change runtime ".to_owned(),
+            Self::LauncherCache => " Clear caches ".to_owned(),
+            Self::AutomaticSelection { setting, .. } => setting.title().to_owned(),
             _ => format!(" Delete '{}' ", self.name()),
         }
     }
@@ -89,6 +122,13 @@ impl ConfirmTarget {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
+            ConfirmTarget::InstanceRuntime { .. } => {
+                "Some installed mods may be incompatible".to_owned()
+            }
+            ConfirmTarget::LauncherCache => {
+                "Provider metadata and Java detection will be rebuilt".to_owned()
+            }
+            ConfirmTarget::AutomaticSelection { setting, .. } => setting.description().to_owned(),
         }
     }
 
@@ -99,6 +139,11 @@ impl ConfirmTarget {
             ConfirmTarget::ConfigProfile { profile } => profile,
             ConfirmTarget::Content { name, .. } => name,
             ConfirmTarget::OrphanDependencies { .. } => "unused dependencies",
+            ConfirmTarget::InstanceRuntime { name, .. } => name,
+            ConfirmTarget::LauncherCache => "launcher caches",
+            ConfirmTarget::AutomaticSelection { instance, .. } => {
+                instance.as_deref().unwrap_or("launcher")
+            }
         }
     }
 
@@ -106,6 +151,9 @@ impl ConfirmTarget {
         match self {
             Self::Content { dependents, .. } if !dependents.is_empty() => " delete anyway",
             Self::OrphanDependencies { .. } => " remove all",
+            Self::InstanceRuntime { .. } => " change",
+            Self::LauncherCache => " clear",
+            Self::AutomaticSelection { .. } => " enable",
             _ => " confirm",
         }
     }

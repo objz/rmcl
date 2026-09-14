@@ -68,6 +68,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
+      - name: install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libxcb1-dev
       - run: cargo build --locked
       - run: cargo test --locked --all-targets
 
@@ -86,4 +89,6 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: Swatinem/rust-cache@v2
+      - name: install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libxcb1-dev
       - run: cargo test --locked --all-targets -- --ignored

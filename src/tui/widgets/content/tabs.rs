@@ -248,10 +248,7 @@ pub fn render(
     let mut content_titles = vec![
         Span::styled(
             mode_label(mode),
-            Style::default()
-                .fg(theme.background())
-                .bg(mode_background)
-                .add_modifier(Modifier::BOLD),
+            crate::tui::widgets::status_badge_style(mode_background),
         ),
         Span::raw(" "),
     ];
@@ -458,6 +455,11 @@ pub fn render(
     }
     // The main panel footer stays on its border; lower-priority hints are omitted when narrow.
     block = block.title_bottom(crate::tui::widgets::popups::keybind_line_fitted(
+        if focused == FocusedArea::Instances {
+            crate::config::settings::ShortcutHintScope::Instances
+        } else {
+            crate::config::settings::ShortcutHintScope::Content
+        },
         &keybinds,
         area.width.saturating_sub(2),
     ));
@@ -504,7 +506,10 @@ pub fn render(
             }
             let loading_text = format!(
                 "Searching {}...",
-                crate::config::SETTINGS.content.discovery_provider_label()
+                crate::config::SETTINGS
+                    .read()
+                    .content
+                    .discovery_provider_label()
             );
             render_discovery(
                 frame,
@@ -671,7 +676,10 @@ fn render_downloadable(
     if mode == ContentMode::Discover {
         let loading_text = format!(
             "Searching {}...",
-            crate::config::SETTINGS.content.discovery_provider_label()
+            crate::config::SETTINGS
+                .read()
+                .content
+                .discovery_provider_label()
         );
         render_discovery(
             frame,
@@ -992,7 +1000,7 @@ pub(crate) fn render_version_popup(
                 .style(Style::default().fg(THEME.as_ref().text_dim()))
                 .render(area, buffer);
             } else {
-                crate::tui::widgets::popups::new_instance::render_select_list(
+                crate::tui::widgets::popups::select_list::render(
                     items.clone(),
                     selected,
                     area,

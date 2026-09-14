@@ -7,14 +7,21 @@
 pub mod base;
 pub mod confirm;
 pub mod error;
+pub mod global_settings;
 pub mod import_modpack;
+pub mod instance_settings;
 mod load_state;
 pub mod modpack_update;
 pub mod new_instance;
+pub(crate) mod select_list;
+pub(crate) mod settings_controls;
+pub mod version_lists;
 
 pub use load_state::LoadState;
 
 use ratatui::{layout::Rect, text::Span};
+
+use crate::config::settings::ShortcutHintScope;
 
 pub(crate) fn compare_game_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parse_parts = |version: &str| {
@@ -80,6 +87,13 @@ pub fn top_right_rect(frame: Rect, inner_w: usize, inner_h: usize) -> Rect {
 }
 
 pub fn keybind_line(binds: &[(&str, &str)]) -> ratatui::text::Line<'static> {
+    if !shortcut_hints_visible(ShortcutHintScope::Popups) {
+        return ratatui::text::Line::default();
+    }
+    styled_keybind_line(binds)
+}
+
+fn styled_keybind_line(binds: &[(&str, &str)]) -> ratatui::text::Line<'static> {
     use crate::config::theme::THEME;
     use ratatui::{
         style::{Modifier, Style},
@@ -104,7 +118,18 @@ pub fn keybind_line(binds: &[(&str, &str)]) -> ratatui::text::Line<'static> {
     Line::from(spans)
 }
 
-pub fn keybind_line_fitted(binds: &[(&str, &str)], max_width: u16) -> ratatui::text::Line<'static> {
+pub fn keybind_line_fitted(
+    scope: ShortcutHintScope,
+    binds: &[(&str, &str)],
+    max_width: u16,
+) -> ratatui::text::Line<'static> {
+    if !shortcut_hints_visible(scope) {
+        return ratatui::text::Line::default();
+    }
+    fitted_keybind_line(binds, max_width)
+}
+
+fn fitted_keybind_line(binds: &[(&str, &str)], max_width: u16) -> ratatui::text::Line<'static> {
     let mut width = 0;
     let mut count = 0;
     for (key, label) in binds {
@@ -116,7 +141,11 @@ pub fn keybind_line_fitted(binds: &[(&str, &str)], max_width: u16) -> ratatui::t
         count += 1;
     }
 
-    keybind_line(&binds[..count]).right_aligned()
+    styled_keybind_line(&binds[..count]).right_aligned()
+}
+
+pub(crate) fn shortcut_hints_visible(scope: ShortcutHintScope) -> bool {
+    crate::config::SETTINGS.read().ui.show_shortcut_hints(scope)
 }
 
 #[cfg(test)]

@@ -480,7 +480,7 @@ async fn resolve_version_id(
 ) {
     match modrinth::fetch_version(client, version_id).await {
         Ok(version) => {
-            let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+            let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
             let tmp_dir = crate::storage::MetadataPaths::new(&meta_dir).temporary();
             if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
                 set_error_and_back(
@@ -558,7 +558,7 @@ fn start_version_download(state: &mut ImportWizardState) {
 
     tokio::spawn(async move {
         let client = crate::net::HttpClient::new();
-        let meta_dir = crate::config::SETTINGS.paths.resolve_meta_dir();
+        let meta_dir = crate::config::SETTINGS.read().paths.resolve_meta_dir();
         let tmp_dir = crate::storage::MetadataPaths::new(&meta_dir).temporary();
         if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
             set_error_and_back(
@@ -618,7 +618,7 @@ fn spawn_discovery_request_with_query(
     crate::tui::widgets::content::discovery::spawn_provider_search(
         query,
         crate::tui::widgets::content::discovery::DiscoveryTarget::Modpacks,
-        crate::config::SETTINGS.paths.resolve_meta_dir(),
+        crate::config::SETTINGS.read().paths.resolve_meta_dir(),
         request,
     );
 }
@@ -667,9 +667,10 @@ fn start_discovered_download(request: crate::tui::widgets::content::discovery::I
     tokio::spawn(async move {
         let client = crate::net::HttpClient::new();
         let registry = crate::instance::content::provider::ProviderRegistry::configured(client);
-        let tmp_dir =
-            crate::storage::MetadataPaths::new(crate::config::SETTINGS.paths.resolve_meta_dir())
-                .temporary();
+        let tmp_dir = crate::storage::MetadataPaths::new(
+            crate::config::SETTINGS.read().paths.resolve_meta_dir(),
+        )
+        .temporary();
         let result: Result<crate::instance::import::ImportSummary, crate::net::NetError> = async {
             let source = crate::instance::ProviderProject {
                 provider: request.provider.clone(),

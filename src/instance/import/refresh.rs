@@ -55,9 +55,7 @@ pub async fn prepare(
     instance: &InstanceConfig,
     target: VersionInfo,
 ) -> Result<RefreshPlan, String> {
-    if crate::instance::runtime::get(&instance.name)
-        .is_some_and(|state| !matches!(state, crate::instance::runtime::RunState::Crashed(_)))
-    {
+    if crate::instance::runtime::is_active(&instance.name) {
         return Err("Stop the instance before changing its modpack".to_owned());
     }
     let source = instance

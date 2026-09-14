@@ -104,6 +104,10 @@ impl MetadataPaths {
         self.cache().join("loaders").join("profiles")
     }
 
+    pub fn java_installations(&self) -> PathBuf {
+        self.cache().join("java").join("installations.json")
+    }
+
     pub fn provider_cache(&self, provider: &str) -> PathBuf {
         self.cache().join("providers").join(provider)
     }
@@ -135,6 +139,18 @@ impl MetadataPaths {
     pub fn cache_rebuild_pending(&self) -> PathBuf {
         self.state().join("cache-rebuild.pending")
     }
+}
+
+pub fn clear_disposable_caches(meta_dir: &Path) -> io::Result<()> {
+    let paths = MetadataPaths::new(meta_dir);
+    for path in [paths.cache().join("providers"), paths.cache().join("java")] {
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

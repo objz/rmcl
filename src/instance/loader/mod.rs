@@ -67,6 +67,20 @@ pub trait ModLoaderInstaller: Send + Sync {
         instance_dir: &Path,
         meta_dir: &Path,
     ) -> Result<(), InstallError>;
+
+    async fn install_with_java(
+        &self,
+        client: &HttpClient,
+        game_version: &str,
+        loader_version: &str,
+        instance_dir: &Path,
+        meta_dir: &Path,
+        java_path: Option<&str>,
+    ) -> Result<(), InstallError> {
+        let _ = java_path;
+        self.install(client, game_version, loader_version, instance_dir, meta_dir)
+            .await
+    }
 }
 
 // writes raw profile JSON bytes to meta_dir/loader-profiles/<filename>.
@@ -80,7 +94,21 @@ pub(crate) fn save_profile_bytes(
 ) -> std::io::Result<()> {
     let profiles_dir = crate::storage::MetadataPaths::new(meta_dir).loader_profiles();
     std::fs::create_dir_all(&profiles_dir)?;
-    std::fs::write(profiles_dir.join(filename), bytes)
+    crate::storage::write_atomic(&profiles_dir.join(filename), bytes)
+}
+
+pub(crate) fn profile_filename(
+    loader: ModLoader,
+    game_version: &str,
+    loader_version: &str,
+) -> Option<String> {
+    match loader {
+        ModLoader::Vanilla => None,
+        ModLoader::Fabric => Some(format!("fabric-{game_version}-{loader_version}.json")),
+        ModLoader::Quilt => Some(format!("quilt-{game_version}-{loader_version}.json")),
+        ModLoader::Forge => Some(format!("forge-{game_version}-{loader_version}.json")),
+        ModLoader::NeoForge => Some(format!("neoforge-{loader_version}.json")),
+    }
 }
 
 // used by forge/neoforge. their java installer drops a version json into
@@ -118,11 +146,29 @@ pub(crate) fn save_installer_profile(
         ver_json_path.display()
     );
     let raw = std::fs::read(&ver_json_path)?;
+    let profile: crate::launch_profile::model::LaunchProfile = serde_json::from_slice(&raw)
+        .map_err(|error| {
+            InstallerError::Profile(format!(
+                "Invalid installer profile {}: {error}",
+                ver_json_path.display()
+            ))
+        })?;
+    if profile.id.trim().is_empty()
+        || profile
+            .main_class
+            .as_deref()
+            .is_none_or(|main_class| main_class.trim().is_empty())
+    {
+        return Err(InstallerError::Profile(format!(
+            "Installer profile {} is missing id or mainClass",
+            ver_json_path.display()
+        )));
+    }
 
     let profiles_dir = crate::storage::MetadataPaths::new(meta_dir).loader_profiles();
     std::fs::create_dir_all(&profiles_dir)?;
     let profile_path = profiles_dir.join(profile_filename);
-    std::fs::write(&profile_path, &raw)?;
+    crate::storage::write_atomic(&profile_path, &raw)?;
     tracing::debug!(
         "Saved installer profile to {} ({} bytes)",
         profile_path.display(),

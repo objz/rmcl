@@ -45,7 +45,7 @@ pub fn icon_path() -> Option<PathBuf> {
 // lazily writes the bundled svg icon to disk the first time a shortcut needs it
 fn ensure_icon() -> Option<PathBuf> {
     let path = icon_path()?;
-    if path.exists() {
+    if std::fs::read(&path).ok().as_deref() == Some(ICON_BYTES) {
         return Some(path);
     }
     let parent = path.parent()?;
@@ -53,7 +53,7 @@ fn ensure_icon() -> Option<PathBuf> {
         tracing::warn!("Failed to create icon directory: {}", e);
         return None;
     }
-    if let Err(e) = std::fs::write(&path, ICON_BYTES) {
+    if let Err(e) = crate::storage::write_atomic(&path, ICON_BYTES) {
         tracing::warn!("Failed to write bundled icon: {}", e);
         return None;
     }
@@ -74,7 +74,9 @@ pub fn create(config: &InstanceConfig) -> std::io::Result<PathBuf> {
 
     let icon = ensure_icon();
     let content = build_content(&config.name, icon.as_deref());
-    std::fs::write(&path, content)?;
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
+        crate::storage::write_atomic(&path, content.as_bytes())?;
+    }
 
     #[cfg(unix)]
     {
@@ -96,22 +98,28 @@ pub fn remove(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn toggle(config: &InstanceConfig) -> std::io::Result<bool> {
-    if exists(&config.name) {
-        remove(&config.name)?;
-        Ok(false)
+pub fn set_enabled(config: &InstanceConfig, enabled: bool) -> std::io::Result<()> {
+    if enabled {
+        create(config).map(|_| ())
     } else {
-        create(config)?;
-        Ok(true)
+        remove(&config.name)
     }
 }
 
+pub fn toggle(config: &InstanceConfig) -> std::io::Result<bool> {
+    let enabled = !exists(&config.name);
+    set_enabled(config, enabled)?;
+    Ok(enabled)
+}
+
 pub fn rename(old_name: &str, new_config: &InstanceConfig) -> std::io::Result<()> {
-    if !exists(old_name) {
+    let Some(old_path) = desktop_path(old_name).filter(|path| path.exists()) else {
         return Ok(());
-    }
-    remove(old_name)?;
+    };
     create(new_config)?;
+    if desktop_path(&new_config.name).as_ref() != Some(&old_path) {
+        std::fs::remove_file(old_path)?;
+    }
     Ok(())
 }
 
@@ -148,7 +156,10 @@ fn build_linux_desktop(name: &str, icon: Option<&Path>) -> String {
     out.push_str("Type=Application\n");
     out.push_str(&format!("Name=Minecraft - {name}\n"));
     out.push_str(&format!("Comment=Launch {name} Minecraft instance\n"));
-    out.push_str(&format!("Exec=rmcl instance launch \"{name}\"\n"));
+    out.push_str(&format!(
+        "Exec=rmcl instance launch {}\n",
+        quote_desktop_exec_arg(name)
+    ));
     if let Some(icon) = icon {
         out.push_str(&format!("Icon={}\n", icon.display()));
     }
@@ -159,14 +170,12 @@ fn build_linux_desktop(name: &str, icon: Option<&Path>) -> String {
 
 #[cfg(target_os = "windows")]
 fn build_windows_shortcut(name: &str) -> String {
-    let escaped_name = name.replace('"', "\"\"");
+    let command = format!("rmcl instance launch {}", quote_windows_arg(name));
+    let escaped_command = command.replace('"', "\"\"");
 
     let mut out = String::new();
     out.push_str("Set shell = CreateObject(\"WScript.Shell\")\r\n");
-    out.push_str(&format!(
-        "shell.Run \"rmcl instance launch \"\"{}\"\"\", 0, False\r\n",
-        escaped_name
-    ));
+    out.push_str(&format!("shell.Run \"{escaped_command}\", 0, False\r\n"));
     out
 }
 
@@ -175,8 +184,49 @@ fn build_macos_command(name: &str) -> String {
     let mut out = String::new();
     out.push_str("#!/bin/bash\n");
     out.push_str(&format!("# Launch Minecraft instance: {name}\n"));
-    out.push_str(&format!("rmcl instance launch \"{name}\"\n"));
+    out.push_str(&format!("rmcl instance launch {}\n", quote_shell_arg(name)));
     out
+}
+
+fn quote_desktop_exec_arg(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        if matches!(character, '"' | '`' | '$' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('"');
+    escaped
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn quote_shell_arg(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn quote_windows_arg(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    let mut backslashes = 0;
+    for character in value.chars() {
+        if character == '\\' {
+            backslashes += 1;
+        } else if character == '"' {
+            quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+            quoted.push('"');
+            backslashes = 0;
+        } else {
+            quoted.extend(std::iter::repeat_n('\\', backslashes));
+            quoted.push(character);
+            backslashes = 0;
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 // replaces anything that isn't alphanumeric, dash, or underscore with _

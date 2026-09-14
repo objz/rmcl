@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap},
+    widgets::{ListItem, Paragraph, Widget, Wrap},
 };
 use tui_prompts::State as PromptState;
 
@@ -202,40 +202,14 @@ fn render_version_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffe
                 })
                 .collect();
 
-            render_select_list(items, state.version_idx, area, buf);
+            super::super::select_list::render(items, state.version_idx, area, buf);
         }
     }
 }
 
-pub(crate) fn render_select_list(
-    items: Vec<ListItem<'_>>,
-    selected: usize,
-    area: Rect,
-    buffer: &mut ratatui::buffer::Buffer,
-) {
-    let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-        .highlight_symbol(Span::styled(
-            "▶ ",
-            Style::default()
-                .fg(THEME.as_ref().accent())
-                .add_modifier(Modifier::BOLD),
-        ));
-    let mut state = ListState::default().with_selected(Some(selected));
-    StatefulWidget::render(list, area, buffer, &mut state);
-}
-
 fn render_loader_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let theme = THEME.as_ref();
-    let loaders = [
-        ModLoader::Vanilla,
-        ModLoader::Fabric,
-        ModLoader::Forge,
-        ModLoader::NeoForge,
-        ModLoader::Quilt,
-    ];
-
-    let items: Vec<ListItem> = loaders
+    let items: Vec<ListItem> = super::super::select_list::MOD_LOADERS
         .into_iter()
         .map(|loader| {
             ListItem::new(Line::from(Span::styled(
@@ -245,16 +219,7 @@ fn render_loader_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffer
         })
         .collect();
 
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .fg(theme.accent())
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
-
-    let mut list_state = ListState::default().with_selected(Some(state.loader_idx));
-    StatefulWidget::render(list, area, buf, &mut list_state);
+    super::super::select_list::render(items, state.loader_idx, area, buf);
 }
 
 fn render_loader_version_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffer::Buffer) {
@@ -289,16 +254,7 @@ fn render_loader_version_step(state: &WizardState, area: Rect, buf: &mut ratatui
                 })
                 .collect();
 
-            let list = List::new(items)
-                .highlight_style(
-                    Style::default()
-                        .fg(theme.accent())
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("▶ ");
-
-            let mut list_state = ListState::default().with_selected(Some(state.loader_version_idx));
-            StatefulWidget::render(list, area, buf, &mut list_state);
+            super::super::select_list::render(items, state.loader_version_idx, area, buf);
         }
     }
 }

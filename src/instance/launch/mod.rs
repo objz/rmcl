@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::auth::AccountType;
-use crate::instance::models::{InstanceConfig, ModLoader};
+use crate::instance::models::{InstanceConfig, LaunchCommand, ModLoader, WindowMode};
 use crate::launch_profile::model::{Argument, LaunchProfile};
 use crate::launch_profile::rules::{self, FeatureSet, RuleAction, RuleContext};
 use crate::launch_profile::templates::TemplateContext;
@@ -45,6 +45,8 @@ pub enum LaunchError {
     },
     #[error("{0}")]
     Auth(String),
+    #[error("{phase} command failed: {reason}")]
+    Command { phase: &'static str, reason: String },
     #[error("Config sync error: {0}")]
     ConfigSync(#[from] crate::instance::config_sync::ConfigSyncError),
 }
@@ -59,26 +61,23 @@ fn build_game_args(
     Ok((rendered.jvm, rendered.game))
 }
 
-fn parse_java_major_version(text: &str) -> Option<u32> {
-    let quoted = text
-        .split_once('"')
-        .and_then(|(_, rest)| rest.split_once('"').map(|(version, _)| version));
+fn apply_custom_resolution(game_args: &mut Vec<String>, resolution: Option<(u32, u32)>) {
+    let Some((width, height)) = resolution else {
+        return;
+    };
+    if !game_args.iter().any(|arg| arg == "--width") {
+        game_args.extend(["--width".to_owned(), width.to_string()]);
+    }
+    if !game_args.iter().any(|arg| arg == "--height") {
+        game_args.extend(["--height".to_owned(), height.to_string()]);
+    }
+}
 
-    let token = quoted.or_else(|| {
-        let start = text.find(|c: char| c.is_ascii_digit())?;
-        Some(&text[start..])
-    })?;
-
-    let parts: Vec<u32> = token
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| part.parse::<u32>().ok())
-        .collect();
-
-    match parts.as_slice() {
-        [1, legacy_major, ..] => Some(*legacy_major),
-        [major, ..] => Some(*major),
-        [] => None,
+fn apply_window_mode(game_args: &mut Vec<String>, window_mode: WindowMode) {
+    if window_mode == WindowMode::Windowed {
+        game_args.retain(|argument| argument != "--fullscreen");
+    } else if !game_args.iter().any(|arg| arg == "--fullscreen") {
+        game_args.push("--fullscreen".to_owned());
     }
 }
 
@@ -87,15 +86,28 @@ async fn check_java_version(java: &str, required: Option<u32>) -> Result<(), Lau
         return Ok(());
     };
 
-    let output = tokio::process::Command::new(java)
-        .arg("-version")
-        .output()
+    let mut command = tokio::process::Command::new(java);
+    command.arg("-version").kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
         .await
+        .map_err(|_| LaunchError::JavaCheckFailed {
+            java: java.to_owned(),
+            required,
+            reason: "version check timed out".to_owned(),
+        })?
         .map_err(|e| LaunchError::JavaCheckFailed {
             java: java.to_owned(),
             required,
             reason: e.to_string(),
         })?;
+
+    if !output.status.success() {
+        return Err(LaunchError::JavaCheckFailed {
+            java: java.to_owned(),
+            required,
+            reason: format!("`java -version` exited with {}", output.status),
+        });
+    }
 
     let version_text = format!(
         "{}{}",
@@ -104,10 +116,12 @@ async fn check_java_version(java: &str, required: Option<u32>) -> Result<(), Lau
     );
 
     let detected =
-        parse_java_major_version(&version_text).ok_or_else(|| LaunchError::JavaCheckFailed {
-            java: java.to_owned(),
-            required,
-            reason: format!("could not parse `java -version` output: {version_text:?}"),
+        crate::instance::java::parse_java_major_version(&version_text).ok_or_else(|| {
+            LaunchError::JavaCheckFailed {
+                java: java.to_owned(),
+                required,
+                reason: format!("could not parse `java -version` output: {version_text:?}"),
+            }
         })?;
 
     if detected < required {
@@ -171,10 +185,15 @@ async fn migrate_legacy_meta_if_needed(
         }
     };
 
-    tokio::fs::write(meta_path, &raw).await?;
-
     let refreshed: LaunchProfile = serde_json::from_slice(&raw)
         .map_err(|e| LaunchError::Parse(format!("Failed to parse refreshed meta: {e}")))?;
+    if refreshed.arguments.is_none() && refreshed.minecraft_arguments.is_none() {
+        tracing::warn!(
+            "Refetched metadata for {game_version} still has no launch arguments; keeping the cached profile"
+        );
+        return Ok(None);
+    }
+    crate::storage::write_atomic(meta_path, &raw)?;
     Ok(Some(refreshed))
 }
 
@@ -274,11 +293,10 @@ async fn migrate_legacy_loader_profile_if_needed(
     );
 
     let raw = tokio::fs::read(&installer_json_path).await?;
-    tokio::fs::write(profile_path, &raw).await?;
-
     let refreshed: LaunchProfile = serde_json::from_slice(&raw).map_err(|e| {
         LaunchError::Parse(format!("Failed to parse refreshed loader profile: {e}"))
     })?;
+    crate::storage::write_atomic(profile_path, &raw)?;
     Ok(Some(refreshed))
 }
 
@@ -306,6 +324,7 @@ pub struct LaunchInvocation {
     pub main_class: String,
     pub extra_args: Vec<String>,
     pub game_args: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
     pub working_dir: PathBuf,
 }
 
@@ -363,6 +382,13 @@ pub async fn build_launch_invocation(
 ) -> Result<LaunchInvocation, LaunchError> {
     let instance_dir = instances_dir.join(&config.name);
     let minecraft_dir = instance_dir.join(crate::storage::MINECRAFT_DIR_NAME);
+    let (window_mode, resolution) = {
+        let defaults = &crate::config::SETTINGS.read().defaults;
+        (
+            config.effective_window_mode(defaults.window_mode),
+            config.effective_resolution(defaults.resolution),
+        )
+    };
 
     let metadata_paths = crate::storage::MetadataPaths::new(meta_dir);
     let meta_path = metadata_paths
@@ -384,6 +410,7 @@ pub async fn build_launch_invocation(
 
     let current_features = FeatureSet {
         is_quick_play_singleplayer: quick_play_world.map(|_| true),
+        has_custom_resolution: resolution.map(|_| true),
         ..Default::default()
     };
     let host_os_version = system::mojang_os_version();
@@ -403,13 +430,8 @@ pub async fn build_launch_invocation(
     let lib_dir = metadata_paths.libraries();
 
     let lv = config.loader_version.as_deref().unwrap_or("unknown");
-    let profile_filename = match config.loader {
-        ModLoader::Vanilla => None,
-        ModLoader::Fabric => Some(format!("fabric-{}-{}.json", config.game_version, lv)),
-        ModLoader::Quilt => Some(format!("quilt-{}-{}.json", config.game_version, lv)),
-        ModLoader::Forge => Some(format!("forge-{}-{}.json", config.game_version, lv)),
-        ModLoader::NeoForge => Some(format!("neoforge-{}.json", lv)),
-    };
+    let profile_filename =
+        crate::instance::loader::profile_filename(config.loader, &config.game_version, lv);
 
     // load the loader profile (if any), migrate from the old stripped format
     // if needed, and resolve `inheritsFrom` against the vanilla parent (which
@@ -539,6 +561,7 @@ pub async fn build_launch_invocation(
         .clone()
         .or_else(|| {
             crate::config::SETTINGS
+                .read()
                 .paths
                 .effective_java_path()
                 .map(str::to_owned)
@@ -560,6 +583,8 @@ pub async fn build_launch_invocation(
         .join(&config.game_version)
         .join("natives");
     let version_type = merged_profile.type_.as_deref().unwrap_or("release");
+    let resolution_width = resolution.map(|(width, _)| width.to_string());
+    let resolution_height = resolution.map(|(_, height)| height.to_string());
     let template_ctx = TemplateContext {
         library_directory,
         classpath_separator: sep,
@@ -580,18 +605,43 @@ pub async fn build_launch_invocation(
         launcher_version: env!("CARGO_PKG_VERSION"),
         clientid: "0",
         quick_play_singleplayer: quick_play_world,
+        resolution_width: resolution_width.as_deref(),
+        resolution_height: resolution_height.as_deref(),
     };
 
-    let (upstream_jvm_args, game_args) =
+    let (upstream_jvm_args, mut game_args) =
         build_game_args(&merged_profile, &rule_ctx, &template_ctx)?;
+    // Modern Mojang profiles include feature-gated resolution arguments.
+    // Older and third-party profiles may not, so add them when absent.
+    apply_custom_resolution(&mut game_args, resolution);
+    apply_window_mode(&mut game_args, window_mode);
 
-    let mut jvm_args: Vec<String> = vec![
-        format!("-Xms{}", config.memory_min.as_deref().unwrap_or("512M")),
-        format!("-Xmx{}", config.memory_max.as_deref().unwrap_or("2G")),
-    ];
+    let (memory_min, memory_max, global_jvm_args, global_environment) = {
+        let settings = crate::config::SETTINGS.read();
+        (
+            config
+                .memory_min
+                .clone()
+                .unwrap_or_else(|| settings.defaults.memory_min.clone()),
+            config
+                .memory_max
+                .clone()
+                .unwrap_or_else(|| settings.defaults.memory_max.clone()),
+            settings.defaults.jvm_args.clone(),
+            settings.defaults.environment.clone(),
+        )
+    };
+    let mut jvm_args: Vec<String> = vec![format!("-Xms{memory_min}"), format!("-Xmx{memory_max}")];
     jvm_args.extend(patch_jvm_args);
     jvm_args.extend(upstream_jvm_args);
+    jvm_args.extend(global_jvm_args);
     jvm_args.extend(config.jvm_args.clone());
+    if let Some(glfw_path) = config.glfw_path.as_deref() {
+        jvm_args.push(format!("-Dorg.lwjgl.glfw.libname={glfw_path}"));
+    }
+
+    let mut environment = global_environment;
+    environment.extend(config.environment.clone());
 
     Ok(LaunchInvocation {
         java,
@@ -601,8 +651,92 @@ pub async fn build_launch_invocation(
         main_class,
         extra_args,
         game_args,
+        environment,
         working_dir: minecraft_dir,
     })
+}
+
+fn command_process(command: &str) -> tokio::process::Command {
+    #[cfg(windows)]
+    {
+        let mut process = tokio::process::Command::new("cmd");
+        process.args(["/C", command]);
+        process
+    }
+    #[cfg(not(windows))]
+    {
+        let mut process = tokio::process::Command::new("/bin/sh");
+        process.args(["-c", command]);
+        process
+    }
+}
+
+fn select_launch_account<'a>(
+    accounts: &'a [crate::auth::Account],
+    preferred: Option<&str>,
+) -> Option<&'a crate::auth::Account> {
+    preferred
+        .and_then(|uuid| accounts.iter().find(|account| account.uuid == uuid))
+        .or_else(|| accounts.iter().find(|account| account.active))
+}
+
+async fn run_launch_command(
+    phase: &'static str,
+    command: &LaunchCommand,
+    config: &InstanceConfig,
+    invocation: &LaunchInvocation,
+    instance_dir: &Path,
+) -> Result<(), LaunchError> {
+    if !command.enabled || command.command.trim().is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("[{}] Running {} command", config.name, phase.to_lowercase());
+    let mut process = command_process(&command.command);
+    process
+        .current_dir(&invocation.working_dir)
+        .envs(&invocation.environment)
+        .env("INST_NAME", &config.name)
+        .env("INST_ID", &config.name)
+        .env("INST_DIR", instance_dir)
+        .env("INST_MC_DIR", &invocation.working_dir)
+        .env("INST_JAVA", &invocation.java)
+        .env("INST_JAVA_ARGS", invocation.jvm_args.join(" "));
+    let output = process
+        .output()
+        .await
+        .map_err(|error| LaunchError::Command {
+            phase,
+            reason: error.to_string(),
+        })?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        tracing::info!("[{}] [{}] {}", config.name, phase, line);
+    }
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        tracing::warn!("[{}] [{}] {}", config.name, phase, line);
+    }
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(LaunchError::Command {
+            phase,
+            reason: output.status.to_string(),
+        })
+    }
+}
+
+fn finish_config_sync(
+    active: bool,
+    profile: Option<&str>,
+    meta_dir: &Path,
+    minecraft_dir: &Path,
+    instance: &str,
+) {
+    if active
+        && let Err(error) = crate::instance::config_sync::finish(profile, meta_dir, minecraft_dir)
+    {
+        tracing::warn!("Failed to sync config for '{}': {}", instance, error);
+    }
 }
 
 // resolves auth credentials, then builds the launch invocation and spawns
@@ -619,7 +753,9 @@ pub async fn launch(
 
     // resolve auth credentials, refreshing the microsoft token if needed.
     let mut account_store = crate::auth::AccountStore::load();
-    let Some(acc) = account_store.active_account().cloned() else {
+    let account =
+        select_launch_account(&account_store.accounts, config.preferred_account.as_deref());
+    let Some(acc) = account.cloned() else {
         return Err(LaunchError::Auth("No account selected".to_owned()));
     };
 
@@ -673,6 +809,7 @@ pub async fn launch(
 
     let invocation =
         build_launch_invocation(config, instances_dir, meta_dir, &auth, quick_play_world).await?;
+    let instance_dir = instances_dir.join(&config.name);
     tracing::debug!(
         "[{}] Prepared launch invocation: working_dir={} classpath_entries={} jvm_args={} extra_args={} game_args={} main_class={}",
         name,
@@ -689,6 +826,24 @@ pub async fn launch(
         meta_dir,
         &invocation.working_dir,
     )?;
+    if let Err(error) = run_launch_command(
+        "Pre-launch",
+        &config.pre_launch_command,
+        config,
+        &invocation,
+        &instance_dir,
+    )
+    .await
+    {
+        finish_config_sync(
+            config_sync_active,
+            config_sync_profile.as_deref(),
+            meta_dir,
+            &invocation.working_dir,
+            &name,
+        );
+        return Err(error);
+    }
 
     let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
     crate::instance::runtime::register_kill(&name, kill_tx);
@@ -721,6 +876,7 @@ pub async fn launch(
     cmd.args(&invocation.extra_args);
     cmd.args(&invocation.game_args);
     cmd.current_dir(&invocation.working_dir);
+    cmd.envs(&invocation.environment);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -729,6 +885,13 @@ pub async fn launch(
         Err(e) => {
             crate::instance::runtime::cleanup_kill_sender(&name);
             crate::instance::runtime::remove(&name);
+            finish_config_sync(
+                config_sync_active,
+                config_sync_profile.as_deref(),
+                meta_dir,
+                &invocation.working_dir,
+                &name,
+            );
             tracing::error!("[{}] Failed to spawn Minecraft process: {}", name, e);
             return Err(LaunchError::Io(e));
         }
@@ -751,6 +914,10 @@ pub async fn launch(
     let instances_dir_owned = instances_dir.to_path_buf();
     let meta_dir_owned = meta_dir.to_path_buf();
     let minecraft_dir_owned = invocation.working_dir.clone();
+    let instance_dir_owned = instances_dir.join(&config.name);
+    let post_exit_command = config.post_exit_command.clone();
+    let config_for_post_exit = config.clone();
+    let invocation_for_post_exit = invocation.clone();
 
     // spawn a background task to babysit the child process: capture stdout/stderr
     // into both the TUI log viewer and a timestamped log file on disk
@@ -852,15 +1019,26 @@ pub async fn launch(
         let _ = parser_task.await;
         tracing::info!("[{}] Exited with code {:?}", name_for_task, code);
 
-        if config_sync_active
-            && let Err(e) = crate::instance::config_sync::finish(
-                config_sync_profile.as_deref(),
-                &meta_dir_owned,
-                &minecraft_dir_owned,
-            )
+        if let Err(error) = run_launch_command(
+            "Post-exit",
+            &post_exit_command,
+            &config_for_post_exit,
+            &invocation_for_post_exit,
+            &instance_dir_owned,
+        )
+        .await
         {
-            tracing::warn!("Failed to sync config for '{}': {}", name_for_task, e);
+            tracing::warn!("[{}] {}", name_for_task, error);
+            crate::feedback::errors::push_message(tracing::Level::WARN, error.to_string());
         }
+
+        finish_config_sync(
+            config_sync_active,
+            config_sync_profile.as_deref(),
+            &meta_dir_owned,
+            &minecraft_dir_owned,
+            &name_for_task,
+        );
         if code == Some(0) || killed_by_user {
             crate::instance::runtime::remove(&name_for_task);
             tracing::debug!(

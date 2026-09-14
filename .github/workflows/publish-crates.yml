@@ -35,6 +35,9 @@ jobs:
       - name: install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libxcb1-dev
+
       - name: publish to crates.io
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then

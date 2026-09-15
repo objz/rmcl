@@ -52,6 +52,7 @@ struct Mod {
     summary: String,
     #[serde(default)]
     download_count: u64,
+    allow_mod_distribution: Option<bool>,
     logo: Option<Logo>,
     #[serde(default)]
     categories: Vec<Category>,
@@ -230,13 +231,14 @@ async fn search(
 ) -> Result<DiscoveryResults, NetError> {
     let loader = loader.and_then(loader_type);
     let mut projects = Vec::new();
+    let mut received = 0;
     let mut total_hits = 0;
-    while projects.len() < limit {
-        let page_size = (limit - projects.len()).min(50);
+    while received < limit {
+        let page_size = (limit - received).min(50);
         let mut params = vec![
             format!("gameId={MINECRAFT_GAME_ID}"),
             format!("classId={class_id}"),
-            format!("index={}", offset + projects.len()),
+            format!("index={}", offset + received),
             format!("pageSize={page_size}"),
             "sortField=6".to_owned(),
             "sortOrder=desc".to_owned(),
@@ -257,30 +259,36 @@ async fn search(
         )
         .await?;
         total_hits = response.pagination.total_count;
-        let received = response.data.len();
+        let page_received = response.data.len();
+        received += page_received;
         projects.extend(response.data);
-        if received < page_size {
+        if page_received < page_size {
             break;
         }
     }
     Ok(DiscoveryResults {
+        received,
         total_hits,
-        projects: projects
-            .into_iter()
-            .map(|project| DiscoveryProject {
-                id: project.id.to_string(),
-                slug: project.slug,
-                title: project.name,
-                description: project.summary,
-                downloads: project.download_count,
-                icon_url: project
-                    .logo
-                    .map(|logo| logo.thumbnail_url)
-                    .filter(|url| !url.trim().is_empty()),
-                icon_bytes: None,
-            })
-            .collect(),
+        projects: projects.into_iter().filter_map(discovery_project).collect(),
     })
+}
+
+fn discovery_project(project: Mod) -> Option<DiscoveryProject> {
+    project
+        .allow_mod_distribution
+        .unwrap_or(true)
+        .then(|| DiscoveryProject {
+            id: project.id.to_string(),
+            slug: project.slug,
+            title: project.name,
+            description: project.summary,
+            downloads: project.download_count,
+            icon_url: project
+                .logo
+                .map(|logo| logo.thumbnail_url)
+                .filter(|url| !url.trim().is_empty()),
+            icon_bytes: None,
+        })
 }
 
 pub async fn fetch_project(
@@ -439,6 +447,15 @@ pub async fn ensure_download_url(
     api_key: &str,
     version: &mut VersionInfo,
 ) -> Result<(), NetError> {
+    ensure_download_url_from(client, api_key, API_BASE, version).await
+}
+
+async fn ensure_download_url_from(
+    client: &HttpClient,
+    api_key: &str,
+    api_base: &str,
+    version: &mut VersionInfo,
+) -> Result<(), NetError> {
     let Some(file) = version.files.first_mut() else {
         return Err(NetError::Parse("No files in version".to_owned()));
     };
@@ -449,12 +466,19 @@ pub async fn ensure_download_url(
         client,
         api_key,
         &format!(
-            "{API_BASE}/mods/{}/files/{}/download-url",
+            "{api_base}/mods/{}/files/{}/download-url",
             url_encode(&version.project_id),
             url_encode(&version.id)
         ),
     )
-    .await?;
+    .await
+    .map_err(|error| match error {
+        NetError::StatusError { status: 403, .. } => NetError::Parse(
+            "CurseForge does not permit this file to be downloaded by third-party launchers; use the CurseForge website or app"
+                .to_owned(),
+        ),
+        error => error,
+    })?;
     file.url = response.data;
     Ok(())
 }

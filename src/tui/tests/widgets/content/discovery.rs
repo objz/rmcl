@@ -126,6 +126,7 @@ fn provider_merge_preserves_ranking_and_appends_fallbacks() {
                 "modrinth",
                 DiscoveryResults {
                     projects: vec![modrinth_first, modrinth_second],
+                    received: 2,
                     total_hits: 2,
                 },
             ),
@@ -133,6 +134,7 @@ fn provider_merge_preserves_ranking_and_appends_fallbacks() {
                 "curseforge",
                 DiscoveryResults {
                     projects: vec![curseforge_duplicate, curseforge_fallback],
+                    received: 2,
                     total_hits: 2,
                 },
             ),
@@ -165,6 +167,7 @@ fn provider_merge_keeps_same_provider_title_collisions() {
             "modrinth",
             DiscoveryResults {
                 projects: vec![first, second],
+                received: 2,
                 total_hits: 2,
             },
         )],
@@ -188,6 +191,7 @@ fn provider_merge_keeps_the_preferred_project_across_pages() {
             "curseforge",
             DiscoveryResults {
                 projects: vec![fallback],
+                received: 1,
                 total_hits: 200,
             },
         )],
@@ -208,6 +212,7 @@ fn provider_merge_uses_the_longest_provider_result_range() {
                 "modrinth",
                 DiscoveryResults {
                     projects: vec![],
+                    received: 20,
                     total_hits: 20,
                 },
             ),
@@ -215,6 +220,7 @@ fn provider_merge_uses_the_longest_provider_result_range() {
                 "curseforge",
                 DiscoveryResults {
                     projects: vec![],
+                    received: 50,
                     total_hits: 200,
                 },
             ),
@@ -224,6 +230,7 @@ fn provider_merge_uses_the_longest_provider_result_range() {
     );
 
     assert_eq!(merged.total_hits, 200);
+    assert_eq!(merged.received, 50);
 }
 
 #[test]

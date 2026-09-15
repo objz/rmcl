@@ -129,6 +129,7 @@ pub struct DiscoveryProject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryResults {
     pub projects: Vec<DiscoveryProject>,
+    pub received: usize,
     pub total_hits: usize,
 }
 
@@ -187,8 +188,10 @@ pub async fn search_discovery(
         url_encode(&facets),
     );
     let results: DiscoverySearchResponse = client.get_json(&url).await?;
+    let received = results.hits.len();
 
     Ok(DiscoveryResults {
+        received,
         total_hits: results.total_hits.max(0) as usize,
         projects: results
             .hits
@@ -217,7 +220,9 @@ pub async fn search_modpacks(
         url_encode(facets),
     );
     let results: DiscoverySearchResponse = client.get_json(&url).await?;
+    let received = results.hits.len();
     Ok(DiscoveryResults {
+        received,
         total_hits: results.total_hits.max(0) as usize,
         projects: results
             .hits

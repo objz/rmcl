@@ -62,6 +62,21 @@ fn curseforge_library_category_maps_to_cleanup_metadata() {
 }
 
 #[test]
+fn discovery_hides_projects_that_block_third_party_downloads() {
+    let project: Mod = serde_json::from_str(
+        r#"{
+            "id": 7,
+            "name": "Restricted",
+            "slug": "restricted",
+            "allowModDistribution": false
+        }"#,
+    )
+    .unwrap();
+
+    assert!(discovery_project(project).is_none());
+}
+
+#[test]
 fn datapack_discovery_uses_the_curseforge_data_packs_class() {
     assert_eq!(class_id(ContentKind::DataPack), 6945);
 }
@@ -108,4 +123,33 @@ async fn curseforge_versions_follow_pagination() {
             .await
             .unwrap();
     assert_eq!(versions.len(), 51);
+}
+
+#[tokio::test]
+async fn restricted_curseforge_download_has_an_actionable_error() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/mods/7/files/9/download-url"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    let mut version = version_info(
+        serde_json::from_value(serde_json::json!({
+            "id": 9,
+            "modId": 7,
+            "displayName": "Restricted",
+            "fileName": "restricted.jar"
+        }))
+        .unwrap(),
+    );
+
+    let error =
+        ensure_download_url_from(&HttpClient::new(), "test-key", &server.uri(), &mut version)
+            .await
+            .unwrap_err();
+
+    assert!(matches!(error, NetError::Parse(message) if message.contains("third-party launchers")));
 }

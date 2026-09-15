@@ -84,7 +84,7 @@ impl ProgressTask {
     }
 
     pub fn fail(mut self, error: impl std::fmt::Display) {
-        tracing::warn!("Progress task failed: {error}");
+        tracing::debug!("Progress task failed: {error}");
         self.remove();
         self.finished = true;
     }

@@ -1736,7 +1736,7 @@ pub(crate) fn merge_provider_results(
     pages.sort_by_key(|(provider, _)| *provider != preferred);
     let received = pages
         .iter()
-        .map(|(_, page)| page.projects.len())
+        .map(|(_, page)| page.received)
         .max()
         .unwrap_or(0);
     let total_hits = pages

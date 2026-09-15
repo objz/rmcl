@@ -268,16 +268,7 @@ fn profile_instance(matches: &ArgMatches) -> CliResult {
     } else {
         Some(profile.as_str())
     };
-    let instance_dir = manager.instances_dir.join(&config.name);
-    let selected = crate::instance::config_sync::switch_profile(
-        &config.name,
-        config.config_sync_profile.as_deref(),
-        target,
-        &manager.meta_dir,
-        &instance_dir,
-    )?;
-    config.config_sync_profile = selected;
-    manager.save(&config)?;
+    crate::instance::config_sync::switch_profile_and_save(&manager, &mut config, target)?;
 
     println!(
         "Updated '{}' config profile to {}.",

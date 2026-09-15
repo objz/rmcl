@@ -13,6 +13,10 @@ pub enum ConfigSyncError {
     InstanceRunning { instance: String },
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Failed to save config profile: {0}")]
+    Save(String),
+    #[error("Failed to save config profile ({save}) and roll back profile files ({rollback})")]
+    SaveRollback { save: String, rollback: String },
 }
 
 #[derive(Debug)]
@@ -106,7 +110,7 @@ pub fn delete_profile(meta_dir: &Path, profile: &str) -> Result<(), ConfigSyncEr
     Ok(())
 }
 
-pub fn switch_profile(
+fn switch_profile(
     instance_name: &str,
     current_profile: Option<&str>,
     target_profile: Option<&str>,
@@ -170,6 +174,67 @@ pub fn switch_profile(
     sync_from_profile(&profile_dir, &minecraft_dir(instance_dir))?;
 
     Ok(Some(profile.to_string()))
+}
+
+pub fn switch_profile_and_save(
+    manager: &crate::instance::InstanceManager,
+    config: &mut crate::instance::InstanceConfig,
+    target_profile: Option<&str>,
+) -> Result<(), ConfigSyncError> {
+    let current_profile = config.config_sync_profile.clone();
+    let instance_dir = manager.instances_dir.join(&config.name);
+    let selected = switch_profile_and_persist(
+        &config.name,
+        current_profile.as_deref(),
+        target_profile,
+        &manager.meta_dir,
+        &instance_dir,
+        |selected| {
+            let mut updated = config.clone();
+            updated.config_sync_profile = selected.map(str::to_owned);
+            manager.save(&updated)
+        },
+    )?;
+    config.config_sync_profile = selected;
+    Ok(())
+}
+
+fn switch_profile_and_persist<E>(
+    instance_name: &str,
+    current_profile: Option<&str>,
+    target_profile: Option<&str>,
+    meta_dir: &Path,
+    instance_dir: &Path,
+    persist: impl FnOnce(Option<&str>) -> Result<(), E>,
+) -> Result<Option<String>, ConfigSyncError>
+where
+    E: std::fmt::Display,
+{
+    let selected = switch_profile(
+        instance_name,
+        current_profile,
+        target_profile,
+        meta_dir,
+        instance_dir,
+    )?;
+    let Err(save) = persist(selected.as_deref()) else {
+        return Ok(selected);
+    };
+    let save = save.to_string();
+
+    if let Err(rollback) = switch_profile(
+        instance_name,
+        selected.as_deref(),
+        current_profile,
+        meta_dir,
+        instance_dir,
+    ) {
+        return Err(ConfigSyncError::SaveRollback {
+            save,
+            rollback: rollback.to_string(),
+        });
+    }
+    Err(ConfigSyncError::Save(save))
 }
 
 fn normalize_profile(profile: &str) -> Option<&str> {

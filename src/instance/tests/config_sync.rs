@@ -283,6 +283,40 @@ fn switch_between_profiles_saves_old_and_loads_new() {
 }
 
 #[test]
+fn failed_profile_save_restores_previous_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let meta = tmp.path().join("meta");
+    let instance = tmp.path().join("instance");
+    let minecraft = instance.join(crate::storage::MINECRAFT_DIR_NAME);
+    std::fs::create_dir_all(minecraft.join("config")).unwrap();
+    std::fs::create_dir_all(meta.join("state/profiles/main/config")).unwrap();
+    std::fs::write(minecraft.join("options.txt"), "local-options").unwrap();
+    std::fs::write(minecraft.join("config/local.txt"), "local").unwrap();
+    std::fs::write(
+        meta.join("state/profiles/main/options.txt"),
+        "shared-options",
+    )
+    .unwrap();
+    std::fs::write(meta.join("state/profiles/main/config/shared.txt"), "shared").unwrap();
+
+    let error = switch_profile_and_persist("inst", None, Some("main"), &meta, &instance, |_| {
+        Err(std::io::Error::other("disk full"))
+    })
+    .unwrap_err();
+
+    assert!(matches!(error, ConfigSyncError::Save(_)));
+    assert_eq!(
+        std::fs::read_to_string(minecraft.join("options.txt")).unwrap(),
+        "local-options"
+    );
+    assert_eq!(
+        std::fs::read_to_string(minecraft.join("config/local.txt")).unwrap(),
+        "local"
+    );
+    assert!(!minecraft.join("config/shared.txt").exists());
+}
+
+#[test]
 fn second_instance_uses_profile_options_saved_by_first_instance() {
     let tmp = tempfile::tempdir().unwrap();
     let meta = tmp.path().join("meta");

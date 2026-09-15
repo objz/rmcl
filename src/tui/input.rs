@@ -716,23 +716,15 @@ impl App {
                             );
                             return Ok(());
                         }
-                        let instance_dir = self.instance_manager.instances_dir.join(&instance.name);
-                        match crate::instance::config_sync::switch_profile(
-                            &instance.name,
-                            instance.config_sync_profile.as_deref(),
+                        let mut updated = instance.clone();
+                        match crate::instance::config_sync::switch_profile_and_save(
+                            &self.instance_manager,
+                            &mut updated,
                             profile.as_deref(),
-                            &self.instance_manager.meta_dir,
-                            &instance_dir,
                         ) {
-                            Ok(selected) => {
-                                let mut updated = instance.clone();
-                                updated.config_sync_profile = selected;
-                                if let Err(error) = self.instance_manager.save(&updated) {
-                                    tracing::error!("Failed to save config profile: {error}");
-                                } else {
-                                    self.instances_state
-                                        .replace_instance(&instance.name, updated);
-                                }
+                            Ok(()) => {
+                                self.instances_state
+                                    .replace_instance(&instance.name, updated);
                             }
                             Err(error) => {
                                 error_buffer::push_error(error_buffer::ErrorEvent {
@@ -2071,16 +2063,12 @@ impl App {
             .into_iter()
             .filter(|instance| instance.config_sync_profile.as_deref() == Some(profile))
         {
-            let instance_dir = self.instance_manager.instances_dir.join(&instance.name);
             let mut updated = instance.clone();
-            updated.config_sync_profile = crate::instance::config_sync::switch_profile(
-                &instance.name,
-                instance.config_sync_profile.as_deref(),
+            crate::instance::config_sync::switch_profile_and_save(
+                &self.instance_manager,
+                &mut updated,
                 None,
-                &self.instance_manager.meta_dir,
-                &instance_dir,
             )?;
-            self.instance_manager.save(&updated)?;
             self.instances_state
                 .replace_instance(&instance.name, updated);
         }

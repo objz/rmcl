@@ -97,6 +97,80 @@ fn installed_version_action_requires_selected_provider_match() {
 }
 
 #[test]
+fn installed_popup_navigation_preserves_local_filters() {
+    let mut ui = UiHarness::new();
+    ui.add_instance("Popup");
+    ui.app.focused = FocusedArea::Content;
+    ui.app.content_tab = ContentTab::Mods;
+    let path = ui
+        .instance_path("Popup")
+        .join(crate::storage::MINECRAFT_DIR_NAME)
+        .join("mods/known.jar");
+    ui.app.mods_state.entries = vec![content_entry("Known mod", path)];
+    ui.app.mods_state.list_state.selected = Some(0);
+    let record = managed_mod_record("mods/known.jar", "known", false, Vec::new());
+    let project = record.resolved_project().unwrap().clone();
+    ui.app.content_manifest = Some((
+        "Popup".to_owned(),
+        ContentManifest {
+            files: vec![record],
+            ..Default::default()
+        },
+    ));
+    ui.app.mods_state.entries[0].provider_project = Some(project);
+
+    ui.key(KeyCode::Char('v'));
+    assert!(ui.app.mods_discovery_state.version_popup.is_some());
+    let popup = ui.app.mods_discovery_state.version_popup.as_mut().unwrap();
+    popup.loading = false;
+    popup.versions = vec![
+        crate::net::modrinth::VersionInfo {
+            id: "v1".to_owned(),
+            project_id: "known".to_owned(),
+            name: "V1".to_owned(),
+            version_number: "1.0".to_owned(),
+            game_versions: vec!["1.21.1".to_owned()],
+            loaders: vec!["fabric".to_owned()],
+            version_type: crate::net::modrinth::VersionType::Release,
+            dependencies: Vec::new(),
+            date_published: String::new(),
+            files: Vec::new(),
+        },
+        crate::net::modrinth::VersionInfo {
+            id: "v2".to_owned(),
+            project_id: "known".to_owned(),
+            name: "V2".to_owned(),
+            version_number: "2.0".to_owned(),
+            game_versions: vec!["1.21.1".to_owned()],
+            loaders: vec!["fabric".to_owned()],
+            version_type: crate::net::modrinth::VersionType::Release,
+            dependencies: Vec::new(),
+            date_published: String::new(),
+            files: Vec::new(),
+        },
+    ];
+
+    ui.draw();
+    assert!(ui.app.mods_discovery_state.local_mode);
+    let filters_before = ui.app.mods_discovery_state.filters.clone();
+
+    // Navigating the popup versions must not flip the state into discovery
+    // mode (which used to swap the filters and refresh the background list).
+    ui.key(KeyCode::Char('j'));
+    assert_eq!(
+        ui.app
+            .mods_discovery_state
+            .version_popup
+            .as_ref()
+            .unwrap()
+            .selected,
+        1
+    );
+    assert!(ui.app.mods_discovery_state.local_mode);
+    assert_eq!(ui.app.mods_discovery_state.filters, filters_before);
+}
+
+#[test]
 fn installed_version_hint_requires_selected_provider_match() {
     let mut ui = UiHarness::new();
     ui.app.focused = FocusedArea::Content;

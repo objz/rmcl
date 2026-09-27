@@ -77,6 +77,7 @@ impl Default for ThemeConfig {
     }
 }
 
+#[cfg(not(test))]
 fn load_theme_config() -> ThemeConfig {
     let path = super::get_config_path().join("theme.toml");
     ensure_theme_exists(&path);
@@ -89,6 +90,7 @@ fn load_theme_config() -> ThemeConfig {
     }
 }
 
+#[cfg(not(test))]
 fn ensure_theme_exists(path: &Path) {
     if path.exists() {
         return;
@@ -207,8 +209,13 @@ impl BorderStyleStore {
     }
 }
 
-static THEME_CONFIG: LazyLock<RwLock<ThemeConfig>> =
-    LazyLock::new(|| RwLock::new(load_theme_config()));
+static THEME_CONFIG: LazyLock<RwLock<ThemeConfig>> = LazyLock::new(|| {
+    #[cfg(test)]
+    let config = ThemeConfig::default();
+    #[cfg(not(test))]
+    let config = load_theme_config();
+    RwLock::new(config)
+});
 
 pub static THEME: LazyLock<ThemeStore> = LazyLock::new(|| {
     let config = THEME_CONFIG

@@ -138,12 +138,18 @@ async fn modrinth_discovery_returns_unique_compatible_mods() {
     use rmcl::net::modrinth::search_discovery;
 
     let client = HttpClient::new();
+    let filters = rmcl::instance::content::provider::DiscoverySearchFilters {
+        game_versions: vec!["1.21.1".to_owned()],
+        ..Default::default()
+    };
     let result = search_discovery(
         &client,
         ContentKind::Mod,
         "sodium",
-        "1.21.1",
+        &filters,
         ModLoader::Fabric,
+        rmcl::instance::content::provider::DiscoverySort::Relevance,
+        false,
         0,
         100,
     )
@@ -173,8 +179,10 @@ async fn modrinth_discovery_returns_unique_compatible_mods() {
             &client,
             ContentKind::Mod,
             "sodium",
-            "1.21.1",
+            &filters,
             ModLoader::Fabric,
+            rmcl::instance::content::provider::DiscoverySort::Relevance,
+            false,
             offset,
             100,
         )
@@ -199,8 +207,11 @@ async fn curseforge_discovery_returns_compatible_mods() {
         api_key,
         ContentKind::Mod,
         "sodium",
-        "1.21.1",
+        &["1.21.1".to_owned()],
         ModLoader::Fabric,
+        &[],
+        rmcl::instance::content::provider::DiscoverySort::Relevance,
+        false,
         0,
         20,
     )

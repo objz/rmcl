@@ -63,7 +63,6 @@ impl InstanceManager {
         validate_name(name)?;
 
         let instance_dir = self.instances_dir.join(name);
-        let instance_json = instance_dir.join("instance.json");
         tracing::info!(
             "Creating instance '{}' (Minecraft {}, loader {}, loader_version={})",
             name,
@@ -73,26 +72,23 @@ impl InstanceManager {
         );
         tracing::debug!("Instance directory: {}", instance_dir.display());
 
-        if instance_json.exists() {
+        if instance_dir.exists() {
             tracing::warn!(
                 "Cannot create instance '{}': {} already exists",
                 name,
-                instance_json.display()
+                instance_dir.display()
             );
             return Err(InstanceError::AlreadyExists(name.to_string()));
         }
 
-        // leftover directory without config = botched previous creation, nuke it
-        if instance_dir.exists() && !instance_json.exists() {
-            tracing::warn!(
-                "Removing incomplete instance directory before recreating '{}': {}",
-                name,
-                instance_dir.display()
-            );
-            std::fs::remove_dir_all(&instance_dir)?;
+        std::fs::create_dir_all(&self.instances_dir)?;
+        match std::fs::create_dir(&instance_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(InstanceError::AlreadyExists(name.to_owned()));
+            }
+            Err(error) => return Err(error.into()),
         }
-
-        std::fs::create_dir_all(&instance_dir)?;
 
         let result = self
             .create_inner(name, game_version, loader, loader_version, &instance_dir)

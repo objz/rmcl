@@ -8,8 +8,8 @@ mod state;
 pub use render::render;
 pub use render::{popup_rect, render_with_picker};
 pub use state::{
-    ImportResult, ImportStep, ImportWizardState, drain, handle_discovery_click, handle_key,
-    has_version_popup, open, take_result,
+    ImportResult, ImportStep, ImportWizardState, discovery_activity, drain, handle_discovery_click,
+    handle_key, has_version_popup, open, take_result,
 };
 
 #[cfg(test)]

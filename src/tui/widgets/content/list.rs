@@ -5,8 +5,8 @@
 // supports toggling items on/off by renaming files with .disabled suffix,
 // search filtering, per-instance caching, and directory change detection.
 // also handles minecraft's formatting codes for colored mod names/descriptions
-// because apparently mojang thought terminal UIs would need that. thanks guys
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
@@ -53,13 +53,20 @@ impl ContentStream {
         }
     }
 
-    pub fn send_icon(&self, file_stem: String, path: std::path::PathBuf, bytes: Vec<u8>) -> bool {
+    pub fn send_icon(
+        &self,
+        file_stem: String,
+        path: std::path::PathBuf,
+        bytes: Vec<u8>,
+        source: Option<(String, String)>,
+    ) -> bool {
         if self
             .sender
             .send(ContentStreamUpdate::Icon {
                 file_stem,
                 path,
                 bytes,
+                source,
             })
             .is_ok()
         {
@@ -70,10 +77,19 @@ impl ContentStream {
         }
     }
 
-    pub fn send_icon_unavailable(&self, file_stem: String, path: std::path::PathBuf) -> bool {
+    pub fn send_icon_unavailable(
+        &self,
+        file_stem: String,
+        path: std::path::PathBuf,
+        source: Option<(String, String)>,
+    ) -> bool {
         if self
             .sender
-            .send(ContentStreamUpdate::IconUnavailable { file_stem, path })
+            .send(ContentStreamUpdate::IconUnavailable {
+                file_stem,
+                path,
+                source,
+            })
             .is_ok()
         {
             crate::feedback::request_redraw();
@@ -84,7 +100,41 @@ impl ContentStream {
     }
 
     pub fn upsert(&self, entry: ContentEntry) -> bool {
-        if self.sender.send(ContentStreamUpdate::Upsert(entry)).is_ok() {
+        if self
+            .sender
+            .send(ContentStreamUpdate::Upsert(entry, false))
+            .is_ok()
+        {
+            crate::feedback::request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn preview(&self, entry: ContentEntry) -> bool {
+        if self
+            .sender
+            .send(ContentStreamUpdate::Upsert(entry, true))
+            .is_ok()
+        {
+            crate::feedback::request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn append_preview(&self) -> bool {
+        self.sender.send(ContentStreamUpdate::AppendPreview).is_ok()
+    }
+
+    pub fn order(&self, file_stems: Vec<String>) -> bool {
+        if self
+            .sender
+            .send(ContentStreamUpdate::Order(file_stems))
+            .is_ok()
+        {
             crate::feedback::request_redraw();
             true
         } else {
@@ -108,27 +158,66 @@ impl ContentStream {
 
 enum ContentStreamUpdate {
     Entry(ContentEntry),
-    Upsert(ContentEntry),
+    Upsert(ContentEntry, bool),
+    AppendPreview,
     Retain(HashSet<String>),
+    Order(Vec<String>),
     Icon {
         file_stem: String,
         path: std::path::PathBuf,
         bytes: Vec<u8>,
+        source: Option<(String, String)>,
     },
     IconUnavailable {
         file_stem: String,
         path: std::path::PathBuf,
+        source: Option<(String, String)>,
     },
 }
 
 struct CachedList {
     entries: Vec<ContentEntry>,
     selected: Option<usize>,
+    sort_metadata: HashMap<std::path::PathBuf, FileSortMetadata>,
+}
+
+struct FileSortMetadata {
+    name: String,
+    size: Option<u64>,
+    modified: Option<u128>,
+}
+
+struct CachedSelection {
+    indices: Vec<usize>,
+    filters: crate::tui::widgets::content::discovery::DiscoveryFilters,
+    game_version: String,
+    sort_index: usize,
+    descending: bool,
+    query: String,
+    filter_search: bool,
+    entry_count: usize,
+    pending_count: usize,
+}
+
+impl FileSortMetadata {
+    fn from_entry(entry: &ContentEntry) -> Self {
+        let metadata = std::fs::metadata(&entry.path).ok();
+        Self {
+            name: entry.name.to_lowercase(),
+            size: metadata.as_ref().map(std::fs::Metadata::len),
+            modified: metadata
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|elapsed| elapsed.as_nanos()),
+        }
+    }
 }
 
 struct PendingContentImage {
     file_stem: String,
     path: std::path::PathBuf,
+    source: Option<crate::instance::ProviderProject>,
+    icon_bytes: Vec<u8>,
     icon_lines: Vec<Vec<IconCell>>,
     image: Option<image::DynamicImage>,
 }
@@ -138,6 +227,9 @@ struct PendingProviderIcon {
     project_id: String,
     bytes: Vec<u8>,
     description: String,
+    project: crate::net::modrinth::ProjectInfo,
+    version_id: String,
+    version: Option<crate::net::modrinth::VersionInfo>,
 }
 
 struct DisplayMetadata {
@@ -183,7 +275,14 @@ pub struct ContentListState {
     pending_entry_images: HashSet<String>,
     pending_images: Arc<Mutex<Vec<PendingContentImage>>>,
     pending_provider_icons: Arc<Mutex<Vec<PendingProviderIcon>>>,
-    requested_provider_icons: HashSet<(String, String)>,
+    project_metadata: HashMap<(String, String), crate::net::modrinth::ProjectInfo>,
+    version_metadata: HashMap<(String, String), crate::net::modrinth::VersionInfo>,
+    requested_provider_icons: HashSet<(String, String, String)>,
+    pub local_panel_open: bool,
+    pub local_sort_index: usize,
+    pub local_sort_descending: bool,
+    local_filters: crate::tui::widgets::content::discovery::DiscoveryFilters,
+    local_game_version: String,
     provider_icon_meta_dir: Option<std::path::PathBuf>,
     provider_icon_client: Option<crate::net::HttpClient>,
     images_dirty: bool,
@@ -191,9 +290,15 @@ pub struct ContentListState {
     pub search: crate::tui::widgets::search::SearchState,
     filter_search: bool,
     cache: HashMap<String, CachedList>,
+    sort_metadata: RefCell<HashMap<std::path::PathBuf, FileSortMetadata>>,
+    filtered_cache: RefCell<Option<CachedSelection>>,
     // streaming: individual entries arrive here during initial load
     stream_rx: Option<mpsc::Receiver<ContentStreamUpdate>>,
     stream_order: ContentStreamOrder,
+    progressive_source_stream: bool,
+    staged_source_updates: Option<Vec<ContentStreamUpdate>>,
+    source_order_ready: bool,
+    preview_count: usize,
     // file watcher: notify callback spawns background work,
     // precomputed diff lands here for the UI to pick up
     watcher_diff: Arc<Mutex<Option<WatcherDiff>>>,
@@ -225,7 +330,17 @@ impl Default for ContentListState {
             pending_entry_images: HashSet::new(),
             pending_images: Arc::new(Mutex::new(Vec::new())),
             pending_provider_icons: Arc::new(Mutex::new(Vec::new())),
+            project_metadata: HashMap::new(),
+            version_metadata: HashMap::new(),
             requested_provider_icons: HashSet::new(),
+            local_panel_open: false,
+            local_sort_index: 0,
+            local_sort_descending: false,
+            local_filters: crate::tui::widgets::content::discovery::DiscoveryFilters {
+                game_version: crate::tui::widgets::content::discovery::GameVersionFilter::Any,
+                ..Default::default()
+            },
+            local_game_version: String::new(),
             provider_icon_meta_dir: None,
             provider_icon_client: None,
             images_dirty: true,
@@ -233,8 +348,14 @@ impl Default for ContentListState {
             search: crate::tui::widgets::search::SearchState::default(),
             filter_search: true,
             cache: HashMap::new(),
+            sort_metadata: RefCell::new(HashMap::new()),
+            filtered_cache: RefCell::new(None),
             stream_rx: None,
             stream_order: ContentStreamOrder::default(),
+            progressive_source_stream: false,
+            staged_source_updates: None,
+            source_order_ready: false,
+            preview_count: 0,
             watcher_diff: Arc::new(Mutex::new(None)),
             _watcher: None,
             watched_dir: None,
@@ -247,12 +368,41 @@ impl Default for ContentListState {
 }
 
 impl ContentListState {
+    pub(crate) fn has_pending_icons(&self) -> bool {
+        !self.pending_entry_images.is_empty()
+    }
+
+    fn invalidate_filtered(&mut self) {
+        self.filtered_cache.get_mut().take();
+    }
+
     pub(crate) fn set_entries(&mut self, entries: Vec<ContentEntry>) {
-        self.entries = entries;
+        let previous = std::mem::replace(&mut self.entries, entries);
+        let old = previous
+            .iter()
+            .map(|entry| (entry.file_stem.as_str(), entry))
+            .collect::<HashMap<_, _>>();
+        let current = self
+            .entries
+            .iter()
+            .map(|entry| (entry.file_stem.as_str(), entry))
+            .collect::<HashMap<_, _>>();
+        self.image_protocols.retain(|stem, _| {
+            old.get(stem.as_str())
+                .zip(current.get(stem.as_str()))
+                .is_some_and(|(old, current)| {
+                    old.path == current.path
+                        && old.provider_project == current.provider_project
+                        && old.icon_bytes == current.icon_bytes
+                })
+        });
+        self.invalidate_filtered();
+        self.sort_metadata.get_mut().clear();
         self.list_state = TuiListState::default();
         self.list_state.selected = (!self.entries.is_empty()).then_some(0);
-        self.image_protocols.clear();
         self.requested_images.clear();
+        self.requested_images
+            .extend(self.image_protocols.keys().cloned());
         self.pending_entry_images.clear();
         self.pending_removals.clear();
         self.images_dirty = true;
@@ -300,8 +450,11 @@ impl ContentListState {
             };
             if entry.provider_project != project {
                 if let Some(previous) = &entry.provider_project {
-                    self.requested_provider_icons
-                        .remove(&(previous.provider.clone(), previous.project_id.clone()));
+                    self.requested_provider_icons.remove(&(
+                        previous.provider.clone(),
+                        previous.project_id.clone(),
+                        previous.version_id.clone(),
+                    ));
                 }
                 if entry.title_suffix.as_deref() == Some("Update") {
                     entry.title_suffix = None;
@@ -321,6 +474,7 @@ impl ContentListState {
             }
         }
         if changed {
+            self.invalidate_filtered();
             for stem in invalidated_icons {
                 self.image_protocols.remove(&stem);
                 self.requested_images.remove(&stem);
@@ -370,6 +524,19 @@ impl ContentListState {
         };
         let mut changed = false;
         for metadata in pending {
+            if let Some(version) = metadata.version {
+                self.version_metadata.insert(
+                    (metadata.provider.clone(), metadata.version_id.clone()),
+                    version,
+                );
+            }
+            if !metadata.project.id.is_empty() {
+                self.project_metadata.insert(
+                    (metadata.provider.clone(), metadata.project_id.clone()),
+                    metadata.project,
+                );
+            }
+            changed = true;
             for entry in &mut self.entries {
                 let matches_project = entry.provider_project.as_ref().is_some_and(|project| {
                     project.provider == metadata.provider
@@ -393,6 +560,7 @@ impl ContentListState {
             }
         }
         if changed {
+            self.invalidate_filtered();
             self.images_dirty = true;
             crate::feedback::request_redraw();
         }
@@ -406,28 +574,57 @@ impl ContentListState {
         let Some(client) = self.provider_icon_client.clone() else {
             return;
         };
-        let projects = self.visible_provider_projects(filtered, viewport_height);
+        let projects = if self.needs_local_metadata() {
+            self.entries
+                .iter()
+                .filter_map(|entry| entry.provider_project.clone())
+                .collect()
+        } else {
+            self.visible_provider_projects(filtered, viewport_height)
+        };
+        // Installed panels also need the installed version's supported game
+        // versions to flag content incompatible with the instance version.
+        let want_version = !self.local_game_version.is_empty();
         for project in projects {
-            let key = (project.provider.clone(), project.project_id.clone());
-            if !self.requested_provider_icons.insert(key) {
+            let key = (
+                project.provider.clone(),
+                project.project_id.clone(),
+                project.version_id.clone(),
+            );
+            let missing_version = want_version
+                && !project.version_id.is_empty()
+                && !self
+                    .version_metadata
+                    .contains_key(&(project.provider.clone(), project.version_id.clone()));
+            if !self.requested_provider_icons.insert(key) && !missing_version {
                 continue;
             }
             let pending = self.pending_provider_icons.clone();
             let slots = PROVIDER_ICON_SLOTS.clone();
             let meta_dir = meta_dir.clone();
             let client = client.clone();
+            let refresh_stats = self.needs_local_metadata();
+            let fetch_version = refresh_stats || missing_version;
             tokio::spawn(async move {
                 let Ok(_permit) = slots.acquire_owned().await else {
                     return;
                 };
-                match load_provider_metadata(&client, &meta_dir, &project).await {
-                    Ok((bytes, description)) => {
+                match load_provider_metadata(&client, &meta_dir, &project, refresh_stats).await {
+                    Ok((bytes, project_info)) => {
+                        let version = if fetch_version {
+                            load_installed_version(&client, &meta_dir, &project).await
+                        } else {
+                            None
+                        };
                         if let Ok(mut pending) = pending.lock() {
                             pending.push(PendingProviderIcon {
                                 provider: project.provider,
                                 project_id: project.project_id,
+                                version_id: project.version_id,
+                                version,
                                 bytes,
-                                description,
+                                description: project_info.description.clone(),
+                                project: project_info,
                             });
                             crate::feedback::request_redraw();
                         }
@@ -466,7 +663,17 @@ impl ContentListState {
             if visible_height == 0 {
                 continue;
             }
-            if (entry.icon_bytes.is_none() || entry.description.trim().is_empty())
+            let missing_version = !self.local_game_version.is_empty()
+                && entry.provider_project.as_ref().is_some_and(|installed| {
+                    !installed.version_id.is_empty()
+                        && !self.version_metadata.contains_key(&(
+                            installed.provider.clone(),
+                            installed.version_id.clone(),
+                        ))
+                });
+            if (entry.icon_bytes.is_none()
+                || entry.description.trim().is_empty()
+                || missing_version)
                 && let Some(project) = entry.provider_project.clone()
             {
                 projects.push(project);
@@ -507,8 +714,32 @@ impl ContentListState {
         let (sender, receiver) = mpsc::channel();
         self.stream_rx = Some(receiver);
         self.stream_order = ContentStreamOrder::Source;
+        self.progressive_source_stream = false;
+        self.staged_source_updates = None;
+        self.source_order_ready = false;
+        self.preview_count = 0;
         self.loaded_for = Some(source.into());
         ContentStream { sender }
+    }
+
+    pub(crate) fn cancel_source_stream(&mut self) {
+        self.stream_rx = None;
+        self.staged_source_updates = None;
+        if !self.entries.is_empty() {
+            self.loading = false;
+        }
+    }
+
+    pub(crate) fn show_source_rows_progressively(&mut self) {
+        self.progressive_source_stream = true;
+    }
+
+    pub(crate) fn stage_source_rows_until_order(&mut self) {
+        self.staged_source_updates = Some(Vec::new());
+    }
+
+    pub(crate) fn source_order_ready(&self) -> bool {
+        self.source_order_ready
     }
 
     fn start_stream_with_order(
@@ -523,6 +754,8 @@ impl ContentListState {
         self.pending_removals.clear();
         self.requested_provider_icons.clear();
         self.entries.clear();
+        self.invalidate_filtered();
+        self.sort_metadata.get_mut().clear();
         self.display_metadata.clear();
         self.list_state = TuiListState::default();
         self.loading = true;
@@ -531,6 +764,10 @@ impl ContentListState {
         let (sender, receiver) = mpsc::channel();
         self.stream_rx = Some(receiver);
         self.stream_order = order;
+        self.progressive_source_stream = false;
+        self.staged_source_updates = None;
+        self.source_order_ready = false;
+        self.preview_count = 0;
         ContentStream { sender }
     }
 
@@ -567,6 +804,7 @@ impl ContentListState {
             }
             let file_stem = entry.file_stem.clone();
             let path = entry.path.clone();
+            let source = entry.provider_project.clone();
             let bytes = entry.icon_bytes.clone().unwrap_or_default();
             let rows = entry.icon_lines.as_ref().map_or(3, Vec::len) as u32;
             let columns = square_icon_columns(rows as u16, font_dimensions);
@@ -578,6 +816,8 @@ impl ContentListState {
                         return PendingContentImage {
                             file_stem,
                             path,
+                            source,
+                            icon_bytes: bytes,
                             icon_lines: crate::instance::content::fallback_icon(),
                             image: None,
                         };
@@ -602,6 +842,8 @@ impl ContentListState {
                     PendingContentImage {
                         file_stem,
                         path,
+                        source,
+                        icon_bytes: bytes,
                         icon_lines,
                         image,
                     }
@@ -626,12 +868,22 @@ impl ContentListState {
         };
 
         for result in images {
-            if let Some(entry) = self
-                .entries
-                .iter_mut()
-                .find(|entry| entry.file_stem == result.file_stem && entry.path == result.path)
-            {
+            if let Some(entry) = self.entries.iter_mut().find(|entry| {
+                entry.file_stem == result.file_stem
+                    && entry.path == result.path
+                    && (matches!(self.stream_order, ContentStreamOrder::Sorted)
+                        || entry
+                            .provider_project
+                            .as_ref()
+                            .map(|project| (&project.provider, &project.project_id))
+                            == result
+                                .source
+                                .as_ref()
+                                .map(|project| (&project.provider, &project.project_id)))
+                    && entry.icon_bytes.as_ref() == Some(&result.icon_bytes)
+            }) {
                 self.pending_entry_images.remove(&result.file_stem);
+                self.filtered_cache.get_mut().take();
                 entry.icon_lines = Some(result.icon_lines);
                 if let Some(image) = result.image {
                     self.image_protocols
@@ -648,14 +900,44 @@ impl ContentListState {
             return false;
         };
 
+        let mut staged = std::collections::VecDeque::new();
+        if let Some(updates) = &mut self.staged_source_updates {
+            loop {
+                match rx.try_recv() {
+                    Ok(update) => {
+                        let ordered = matches!(update, ContentStreamUpdate::Order(_));
+                        updates.push(update);
+                        if ordered {
+                            staged = std::mem::take(updates).into();
+                            self.staged_source_updates = None;
+                            break;
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => return false,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.staged_source_updates = None;
+                        self.stream_rx = None;
+                        return false;
+                    }
+                }
+            }
+        }
+
         let mut received = false;
         let mut received_count = 0usize;
         let mut finished = false;
-        let mut restore_selected = None;
         loop {
-            match rx.try_recv() {
+            if self.progressive_source_stream && staged.is_empty() && received_count >= 4 {
+                crate::feedback::request_redraw();
+                break;
+            }
+            match staged.pop_front().map(Ok).unwrap_or_else(|| rx.try_recv()) {
+                Ok(ContentStreamUpdate::AppendPreview) => {
+                    self.preview_count = self.entries.len();
+                }
                 Ok(ContentStreamUpdate::Entry(entry)) => {
                     received = true;
+                    self.sort_metadata.get_mut().remove(&entry.path);
                     self.images_dirty = true;
                     received_count += 1;
                     if entry.icon_bytes.is_some() || entry.provider_icon {
@@ -676,23 +958,34 @@ impl ContentListState {
                         ContentStreamOrder::Source => self.entries.push(entry),
                     }
                 }
-                Ok(ContentStreamUpdate::Upsert(mut entry)) => {
+                Ok(ContentStreamUpdate::Upsert(mut entry, preview)) => {
                     received = true;
                     self.images_dirty = true;
                     received_count += 1;
                     let stem = entry.file_stem.clone();
-                    if let Some(existing) = self
+                    self.sort_metadata.get_mut().remove(&entry.path);
+                    let icon_ready = if let Some(index) = self
                         .entries
-                        .iter_mut()
-                        .find(|existing| existing.file_stem == stem)
+                        .iter()
+                        .position(|existing| existing.file_stem == stem)
                     {
+                        let existing = &mut self.entries[index];
+                        self.sort_metadata.get_mut().remove(&existing.path);
                         let same_source = existing.path == entry.path
                             && existing.provider_project == entry.provider_project;
+                        let same_icon = same_source
+                            && entry.icon_bytes.as_ref() == existing.icon_bytes.as_ref();
+                        let icon_ready = same_source
+                            && existing.icon_bytes.is_some()
+                            && (entry.icon_bytes.is_none() || same_icon)
+                            && !self.pending_entry_images.contains(&stem);
                         if entry.icon_bytes.is_none() && same_source {
                             entry.icon_bytes = existing.icon_bytes.take();
                             entry.icon_lines = existing.icon_lines.take();
                             entry.provider_icon = existing.provider_icon;
-                        } else if entry.icon_bytes != existing.icon_bytes {
+                        } else if same_icon {
+                            entry.icon_lines = existing.icon_lines.take();
+                        } else {
                             self.image_protocols.remove(&entry.file_stem);
                             self.requested_images.remove(&entry.file_stem);
                         }
@@ -704,13 +997,28 @@ impl ContentListState {
                             entry.provider_description = true;
                         }
                         *existing = entry;
+                        if preview {
+                            let entry = self.entries.remove(index);
+                            self.entries
+                                .insert(self.preview_count.min(self.entries.len()), entry);
+                            self.preview_count += 1;
+                        }
+                        icon_ready
                     } else {
-                        self.entries.push(entry);
-                    }
+                        if preview {
+                            self.entries
+                                .insert(self.preview_count.min(self.entries.len()), entry);
+                            self.preview_count += 1;
+                        } else {
+                            self.entries.push(entry);
+                        }
+                        false
+                    };
                     if let Some(entry) = self.entries.iter().find(|entry| entry.file_stem == stem) {
                         self.display_metadata
                             .insert(entry.file_stem.clone(), display_metadata(entry));
                         if (entry.icon_bytes.is_some() || entry.provider_icon)
+                            && !icon_ready
                             && !self.image_protocols.contains_key(&entry.file_stem)
                         {
                             self.pending_entry_images.insert(stem);
@@ -721,9 +1029,11 @@ impl ContentListState {
                 }
                 Ok(ContentStreamUpdate::Retain(file_stems)) => {
                     received = true;
-                    let selected_stem = self.selected_file_stem();
                     self.entries
                         .retain(|entry| file_stems.contains(&entry.file_stem));
+                    self.sort_metadata
+                        .get_mut()
+                        .retain(|path, _| self.entries.iter().any(|entry| entry.path == *path));
                     self.display_metadata
                         .retain(|stem, _| file_stems.contains(stem));
                     self.image_protocols
@@ -732,20 +1042,52 @@ impl ContentListState {
                         .retain(|stem| file_stems.contains(stem));
                     self.pending_entry_images
                         .retain(|stem| file_stems.contains(stem));
-                    restore_selected = Some(selected_stem);
+                    self.images_dirty = true;
+                }
+                Ok(ContentStreamUpdate::Order(file_stems)) => {
+                    received = true;
+                    self.source_order_ready = true;
+                    let positions = file_stems
+                        .iter()
+                        .enumerate()
+                        .map(|(index, stem)| (stem.as_str(), index))
+                        .collect::<HashMap<_, _>>();
+                    self.entries
+                        .retain(|entry| positions.contains_key(entry.file_stem.as_str()));
+                    self.entries
+                        .sort_by_key(|entry| positions[entry.file_stem.as_str()]);
+                    self.sort_metadata
+                        .get_mut()
+                        .retain(|path, _| self.entries.iter().any(|entry| entry.path == *path));
+                    self.display_metadata
+                        .retain(|stem, _| positions.contains_key(stem.as_str()));
+                    self.image_protocols
+                        .retain(|stem, _| positions.contains_key(stem.as_str()));
+                    self.requested_images
+                        .retain(|stem| positions.contains_key(stem.as_str()));
+                    self.pending_entry_images
+                        .retain(|stem| positions.contains_key(stem.as_str()));
+                    self.preview_count = 0;
+                    self.progressive_source_stream = true;
                     self.images_dirty = true;
                 }
                 Ok(ContentStreamUpdate::Icon {
                     file_stem,
                     path,
                     bytes,
+                    source,
                 }) => {
                     received = true;
-                    if let Some(entry) = self
-                        .entries
-                        .iter_mut()
-                        .find(|entry| entry.file_stem == file_stem && entry.path == path)
-                    {
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| {
+                        entry.file_stem == file_stem
+                            && entry.path == path
+                            && source.as_ref().is_none_or(|(provider, project_id)| {
+                                entry.provider_project.as_ref().is_some_and(|project| {
+                                    project.provider == *provider
+                                        && project.project_id == *project_id
+                                })
+                            })
+                    }) {
                         entry.icon_bytes = Some(bytes);
                         entry.provider_icon = true;
                         self.pending_entry_images.insert(file_stem.clone());
@@ -753,13 +1095,22 @@ impl ContentListState {
                         self.images_dirty = true;
                     }
                 }
-                Ok(ContentStreamUpdate::IconUnavailable { file_stem, path }) => {
+                Ok(ContentStreamUpdate::IconUnavailable {
+                    file_stem,
+                    path,
+                    source,
+                }) => {
                     received = true;
-                    if let Some(entry) = self
-                        .entries
-                        .iter_mut()
-                        .find(|entry| entry.file_stem == file_stem && entry.path == path)
-                    {
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| {
+                        entry.file_stem == file_stem
+                            && entry.path == path
+                            && source.as_ref().is_none_or(|(provider, project_id)| {
+                                entry.provider_project.as_ref().is_some_and(|project| {
+                                    project.provider == *provider
+                                        && project.project_id == *project_id
+                                })
+                            })
+                    }) {
                         entry.provider_icon = false;
                         self.pending_entry_images.remove(&file_stem);
                         self.images_dirty = true;
@@ -774,11 +1125,8 @@ impl ContentListState {
             }
         }
 
-        if let Some(selected_stem) = restore_selected {
-            self.restore_selected_file_stem(selected_stem.as_deref());
-        }
-
         if received || finished {
+            self.invalidate_filtered();
             self.loading = false;
             if received_count > 0 {
                 tracing::trace!(
@@ -794,9 +1142,7 @@ impl ContentListState {
                     self.entries.len()
                 );
             }
-            if self.list_state.selected.is_none() && !self.entries.is_empty() {
-                self.list_state.selected = Some(0);
-            }
+            self.clamp_selected_index();
             self.update_scrollbar();
         }
         received || finished
@@ -822,6 +1168,7 @@ impl ContentListState {
                 ..ContentWatcherUpdate::default()
             };
         };
+        self.invalidate_filtered();
         let mut update = ContentWatcherUpdate {
             requires_reconcile: expired_removals || !diff.added.is_empty(),
             ..ContentWatcherUpdate::default()
@@ -844,6 +1191,8 @@ impl ContentListState {
                 } else {
                     entry.path.clone()
                 };
+                self.sort_metadata.get_mut().remove(&old_path);
+                self.sort_metadata.get_mut().remove(path);
                 update.toggles.push(ContentToggle {
                     old_path,
                     new_path: path.clone(),
@@ -867,12 +1216,16 @@ impl ContentListState {
 
         // insert new entries in sorted position
         for mut entry in diff.added {
+            self.sort_metadata.get_mut().remove(&entry.path);
             let replacement = self.entries.iter().position(|existing| {
                 self.pending_removals.contains_key(&existing.file_stem)
                     && existing.name.eq_ignore_ascii_case(&entry.name)
             });
             if let Some(index) = replacement {
                 let old_stem = self.entries[index].file_stem.clone();
+                self.sort_metadata
+                    .get_mut()
+                    .remove(&self.entries[index].path);
                 self.pending_removals.remove(&old_stem);
                 preserve_visual_metadata(&mut entry, &mut self.entries[index]);
                 self.display_metadata.remove(&old_stem);
@@ -896,7 +1249,7 @@ impl ContentListState {
                 self.images_dirty = true;
                 continue;
             }
-            if entry.icon_bytes.is_some() {
+            if entry.icon_bytes.is_some() || entry.provider_icon {
                 self.pending_entry_images.insert(entry.file_stem.clone());
             }
             self.display_metadata
@@ -908,7 +1261,6 @@ impl ContentListState {
             self.entries.insert(pos, entry);
         }
 
-        // clamp selected
         if let Some(sel) = self.list_state.selected {
             if self.entries.is_empty() {
                 self.list_state.selected = None;
@@ -940,6 +1292,9 @@ impl ContentListState {
                 continue;
             }
             let before = self.entries.len();
+            if let Some(entry) = self.entries.iter().find(|entry| entry.file_stem == stem) {
+                self.sort_metadata.get_mut().remove(&entry.path);
+            }
             self.entries.retain(|entry| entry.file_stem != stem);
             removed |= self.entries.len() != before;
             self.display_metadata.remove(&stem);
@@ -948,6 +1303,7 @@ impl ContentListState {
             self.pending_entry_images.remove(&stem);
         }
         if removed {
+            self.invalidate_filtered();
             self.images_dirty = true;
             self.update_scrollbar();
         }
@@ -1089,7 +1445,21 @@ impl ContentListState {
     }
 
     pub fn filtered_indices(&self) -> Vec<usize> {
-        self.entries
+        if self.local_sort_index != 0
+            && let Some(cached) = self.filtered_cache.borrow().as_ref()
+            && cached.filters == self.local_filters
+            && cached.game_version == self.local_game_version
+            && cached.sort_index == self.local_sort_index
+            && cached.descending == self.local_sort_descending
+            && cached.query == self.search.query
+            && cached.filter_search == self.filter_search
+            && cached.entry_count == self.entries.len()
+            && cached.pending_count == self.pending_entry_images.len()
+        {
+            return cached.indices.clone();
+        }
+        let mut indices: Vec<_> = self
+            .entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
@@ -1097,26 +1467,167 @@ impl ContentListState {
                     && (!self.filter_search
                         || self.search.matches(&entry.name)
                         || self.search.matches(&entry.description))
+                    && self.matches_installed_filters(entry)
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+        if self.local_sort_index != 0 {
+            let mut metadata = self.sort_metadata.borrow_mut();
+            for &index in &indices {
+                let entry = &self.entries[index];
+                metadata
+                    .entry(entry.path.clone())
+                    .or_insert_with(|| FileSortMetadata::from_entry(entry));
+            }
+            indices.sort_by(|&a, &b| {
+                let left = &metadata[&self.entries[a].path];
+                let right = &metadata[&self.entries[b].path];
+                let (left_key, right_key) = match self.local_sort_index {
+                    6 => (left.size.map(u128::from), right.size.map(u128::from)),
+                    7 => (left.modified, right.modified),
+                    _ => {
+                        return if self.local_sort_descending {
+                            right.name.cmp(&left.name)
+                        } else {
+                            left.name.cmp(&right.name)
+                        };
+                    }
+                };
+                let order = match (left_key, right_key) {
+                    (Some(left), Some(right)) if self.local_sort_descending => right.cmp(&left),
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                };
+                order.then_with(|| left.name.cmp(&right.name))
+            });
+            *self.filtered_cache.borrow_mut() = Some(CachedSelection {
+                indices: indices.clone(),
+                filters: self.local_filters.clone(),
+                game_version: self.local_game_version.clone(),
+                sort_index: self.local_sort_index,
+                descending: self.local_sort_descending,
+                query: self.search.query.clone(),
+                filter_search: self.filter_search,
+                entry_count: self.entries.len(),
+                pending_count: self.pending_entry_images.len(),
+            });
+        }
+        indices
+    }
+
+    fn needs_local_metadata(&self) -> bool {
+        use crate::tui::widgets::content::discovery::{EnvironmentFilter, GameVersionFilter};
+        self.local_panel_open
+            || !self.local_filters.categories.is_empty()
+            || self.local_filters.environment != EnvironmentFilter::Any
+            || self.local_filters.game_version != GameVersionFilter::Any
+    }
+
+    pub fn set_installed_options(
+        &mut self,
+        filters: &crate::tui::widgets::content::discovery::DiscoveryFilters,
+        sort_index: usize,
+        descending: bool,
+        game_version: &str,
+        panel_open: bool,
+    ) {
+        if self.local_filters == *filters
+            && self.local_sort_index == sort_index
+            && self.local_sort_descending == descending
+            && self.local_game_version == game_version
+            && self.local_panel_open == panel_open
+        {
+            return;
+        }
+        let previously_needed_metadata = self.needs_local_metadata();
+        self.local_filters = filters.clone();
+        self.local_sort_index = sort_index;
+        self.local_sort_descending = descending;
+        self.local_game_version = game_version.to_owned();
+        if (panel_open && !self.local_panel_open)
+            || (!previously_needed_metadata && self.needs_local_metadata())
+        {
+            self.requested_provider_icons.clear();
+        }
+        self.local_panel_open = panel_open;
+        self.clamp_selected_index();
+        self.update_scrollbar();
+    }
+
+    fn matches_installed_filters(&self, entry: &ContentEntry) -> bool {
+        use crate::tui::widgets::content::discovery::{
+            CategoryFilter, EnvironmentFilter, GameVersionFilter,
+        };
+        let filters = &self.local_filters;
+        let specific = match &filters.game_version {
+            GameVersionFilter::Specific(versions) => Some(versions),
+            _ => None,
+        };
+        if filters.categories.is_empty()
+            && filters.environment == EnvironmentFilter::Any
+            && filters.game_version == GameVersionFilter::Any
+        {
+            return true;
+        }
+        let Some(installed) = entry.provider_project.as_ref() else {
+            return filters.categories.is_empty() && filters.environment == EnvironmentFilter::Any;
+        };
+        let project = self
+            .project_metadata
+            .get(&(installed.provider.clone(), installed.project_id.clone()));
+        if !filters.categories.is_empty() || filters.environment != EnvironmentFilter::Any {
+            let metadata = project.map(|project| crate::net::modrinth::DiscoveryMetadata {
+                categories: project
+                    .categories
+                    .iter()
+                    .chain(&project.additional_categories)
+                    .cloned()
+                    .collect(),
+                client_side: project.client_side.clone(),
+                server_side: project.server_side.clone(),
+                ..Default::default()
+            });
+            if !filters.matches(metadata.as_ref()) {
+                return false;
+            }
+        }
+        if filters.game_version != GameVersionFilter::Any {
+            let Some(version) = self
+                .version_metadata
+                .get(&(installed.provider.clone(), installed.version_id.clone()))
+            else {
+                return true; // No provider version to compare; keep locally installed content visible.
+            };
+            if let Some(specific) = specific {
+                let includes = specific
+                    .iter()
+                    .filter(|(_, mode)| **mode == CategoryFilter::Include)
+                    .map(|(id, _)| id);
+                if includes.clone().count() > 0
+                    && !includes
+                        .into_iter()
+                        .any(|id| version.game_versions.contains(id))
+                {
+                    return false;
+                }
+                if specific.iter().any(|(id, mode)| {
+                    *mode == CategoryFilter::Exclude && version.game_versions.contains(id)
+                }) {
+                    return false;
+                }
+            } else if !version.game_versions.contains(&self.local_game_version) {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn set_search_filtering(&mut self, enabled: bool) {
-        let selected_stem = self.selected_file_stem();
         self.filter_search = enabled;
-        self.restore_selected_file_stem(selected_stem.as_deref());
-    }
-
-    fn selected_file_stem(&self) -> Option<String> {
-        let filtered = self.filtered_indices();
-        let entry_index = self
-            .list_state
-            .selected
-            .and_then(|index| filtered.get(index))?;
-        self.entries
-            .get(*entry_index)
-            .map(|entry| entry.file_stem.clone())
+        self.clamp_selected_index();
+        self.update_scrollbar();
     }
 
     pub fn selected_entry(&self) -> Option<&ContentEntry> {
@@ -1133,18 +1644,10 @@ impl ContentListState {
             .is_some_and(|entry| entry.provider_project.is_some())
     }
 
-    fn restore_selected_file_stem(&mut self, file_stem: Option<&str>) {
-        let filtered = self.filtered_indices();
-        self.list_state.selected = file_stem
-            .and_then(|stem| {
-                filtered.iter().position(|index| {
-                    self.entries
-                        .get(*index)
-                        .is_some_and(|entry| entry.file_stem == stem)
-                })
-            })
-            .or_else(|| (!filtered.is_empty()).then_some(0));
-        self.update_scrollbar();
+    pub(crate) fn clamp_selected_index(&mut self) {
+        let count = self.filtered_indices().len();
+        self.list_state.selected =
+            (count > 0).then(|| self.list_state.selected.unwrap_or(0).min(count - 1));
     }
 
     pub fn pending_delete(&self) -> Option<PendingContentDelete> {
@@ -1158,6 +1661,35 @@ impl ContentListState {
     }
 }
 
+async fn load_installed_version(
+    client: &crate::net::HttpClient,
+    meta_dir: &Path,
+    installed: &crate::instance::ProviderProject,
+) -> Option<crate::net::modrinth::VersionInfo> {
+    if installed.version_id.is_empty() {
+        return None;
+    }
+    let cache = crate::storage::MetadataPaths::new(meta_dir)
+        .provider_versions(&installed.provider)
+        .join(&installed.project_id)
+        .join(format!("{}-installed.json", installed.version_id));
+    if let Ok(bytes) = tokio::fs::read(&cache).await
+        && let Ok(version) = serde_json::from_slice(&bytes)
+    {
+        return Some(version);
+    }
+    let registry = crate::instance::content::provider::ProviderRegistry::configured(client.clone());
+    let version = registry
+        .get(&installed.provider)?
+        .version(&installed.version_id)
+        .await
+        .ok()?;
+    if let Ok(bytes) = serde_json::to_vec(&version) {
+        let _ = crate::storage::write_atomic(&cache, &bytes);
+    }
+    Some(version)
+}
+
 impl ContentListState {
     pub fn forget_instance(&mut self, instance_name: &str) {
         let world_prefix = format!("{instance_name}:");
@@ -1169,6 +1701,8 @@ impl ContentListState {
             .is_some_and(|source| source == instance_name || source.starts_with(&world_prefix))
         {
             self.loaded_for = None;
+            self.sort_metadata.get_mut().clear();
+            self.invalidate_filtered();
         }
     }
 
@@ -1204,17 +1738,21 @@ impl ContentListState {
                 CachedList {
                     entries: std::mem::take(&mut self.entries),
                     selected: self.list_state.selected,
+                    sort_metadata: std::mem::take(self.sort_metadata.get_mut()),
                 },
             );
         }
 
         // try cache first
+        // files modified while another instance was active become a real problem.
         if let Some(cached) = self.cache.remove(instance_name) {
             self.entries = cached.entries;
+            self.invalidate_filtered();
+            *self.sort_metadata.get_mut() = cached.sort_metadata;
             self.pending_entry_images.extend(
                 self.entries
                     .iter()
-                    .filter(|entry| entry.icon_bytes.is_some())
+                    .filter(|entry| entry.icon_bytes.is_some() || entry.provider_icon)
                     .map(|entry| entry.file_stem.clone()),
             );
             self.rebuild_display_metadata();
@@ -1354,7 +1892,10 @@ impl ContentListState {
         };
         match crate::instance::content::entry::toggle_entry_path(entry) {
             Ok(Some(new_path)) => {
+                self.invalidate_filtered();
                 let entry = &mut self.entries[index];
+                self.sort_metadata.get_mut().remove(&entry.path);
+                self.sort_metadata.get_mut().remove(&new_path);
                 entry.enabled = !entry.enabled;
                 entry.path = new_path;
             }
@@ -1371,6 +1912,8 @@ impl ContentListState {
     }
 
     pub fn remove_path(&mut self, path: &Path) {
+        self.invalidate_filtered();
+        self.sort_metadata.get_mut().remove(path);
         let file_stem = self
             .entries
             .iter()
@@ -1435,7 +1978,8 @@ async fn load_provider_metadata(
     client: &crate::net::HttpClient,
     meta_dir: &Path,
     installed: &crate::instance::ProviderProject,
-) -> Result<(Vec<u8>, String), crate::net::NetError> {
+    refresh_stats: bool,
+) -> Result<(Vec<u8>, crate::net::modrinth::ProjectInfo), crate::net::NetError> {
     let provider_id = &installed.provider;
     let project_id = &installed.project_id;
     let metadata = crate::storage::MetadataPaths::new(meta_dir);
@@ -1458,22 +2002,33 @@ async fn load_provider_metadata(
         .await
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let project = match cached_project {
-        Some(project) => project,
-        None => {
-            let project = match provider.project(project_id).await {
-                Ok(project) => project,
-                Err(error) => {
-                    return cached_icon.map(|bytes| (bytes, String::new())).ok_or(error);
+    let refresh =
+        cached_project
+            .as_ref()
+            .is_none_or(|project: &crate::net::modrinth::ProjectInfo| {
+                refresh_stats && project.date_modified.is_empty()
+            });
+    let project = if refresh {
+        match provider.project(project_id).await {
+            Ok(project) => {
+                crate::storage::write_atomic(
+                    &project_path,
+                    &serde_json::to_vec_pretty(&project)
+                        .map_err(|error| crate::net::NetError::Parse(error.to_string()))?,
+                )?;
+                project
+            }
+            Err(error) => match cached_project {
+                Some(project) => project,
+                None => {
+                    return cached_icon
+                        .map(|bytes| (bytes, crate::net::modrinth::ProjectInfo::default()))
+                        .ok_or(error);
                 }
-            };
-            crate::storage::write_atomic(
-                &project_path,
-                &serde_json::to_vec_pretty(&project)
-                    .map_err(|error| crate::net::NetError::Parse(error.to_string()))?,
-            )?;
-            project
+            },
         }
+    } else {
+        cached_project.unwrap_or_default()
     };
     let bytes = match (cached_icon, project.icon_url.as_deref()) {
         (Some(bytes), _) => bytes,
@@ -1493,7 +2048,7 @@ async fn load_provider_metadata(
         },
         (None, None) => Vec::new(),
     };
-    Ok((bytes, project.description))
+    Ok((bytes, project))
 }
 
 pub fn handle_key_no_toggle(key_event: &KeyEvent, state: &mut ContentListState) -> bool {
@@ -1576,6 +2131,9 @@ pub fn render(
     }
 
     let filtered = state.filtered_indices();
+    if state.needs_local_metadata() {
+        state.request_visible_provider_icons(&filtered, area.height);
+    }
 
     if filtered.is_empty() {
         state.list_state.selected = None;
@@ -1613,6 +2171,8 @@ pub fn render(
         picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks;
     let entries = &state.entries;
     let display_metadata = &state.display_metadata;
+    let version_metadata = &state.version_metadata;
+    let local_game_version = state.local_game_version.clone();
     let filtered_rows = &filtered;
     let search = &state.search;
     let ready_image_stems: HashSet<String> = state.image_protocols.keys().cloned().collect();
@@ -1686,7 +2246,19 @@ pub fn render(
                 }
             });
         let title_suffix_style = crate::tui::widgets::status_badge_style(title_suffix_color);
-        let footer_label_style = Style::default().fg(if world_details.is_some() {
+        let incompatible_version = !local_game_version.is_empty()
+            && entry.provider_project.as_ref().is_some_and(|installed| {
+                !installed.version_id.is_empty()
+                    && version_metadata
+                        .get(&(installed.provider.clone(), installed.version_id.clone()))
+                        .is_some_and(|version| {
+                            !version.game_versions.is_empty()
+                                && !version.game_versions.contains(&local_game_version)
+                        })
+            });
+        let footer_label_style = Style::default().fg(if incompatible_version {
+            theme.error()
+        } else if world_details.is_some() {
             theme.text_dim()
         } else {
             theme.text()

@@ -58,7 +58,7 @@ fn modpack_discovery_renders_active_search() {
 
 #[test]
 fn modpack_project_page_only_shows_page_actions() {
-    let hints = discovery_keybinds(true);
+    let hints = discovery_keybinds(true, false, false);
 
     assert!(hints.contains(&("v", " versions")));
     assert!(!hints.iter().any(|(_, action)| *action == " pages"));
@@ -68,7 +68,7 @@ fn modpack_project_page_only_shows_page_actions() {
 
 #[test]
 fn modpack_discovery_shows_page_navigation() {
-    assert!(discovery_keybinds(false).contains(&(" [/] ", " pages")));
+    assert!(discovery_keybinds(false, false, false).contains(&(" [/] ", " pages")));
 }
 
 #[test]

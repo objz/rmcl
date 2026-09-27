@@ -125,9 +125,26 @@ fn render_discovery(frame: &mut Frame, area: Rect, picker: &ratatui_image::picke
     let Ok(mut state) = DISCOVERY_STATE.lock() else {
         return;
     };
-    let keybinds = discovery_keybinds(state.project_page_open());
+    let keybinds = discovery_keybinds(
+        state.project_page_open(),
+        state.sort_panel_focused,
+        state.filter_version_picker_open,
+    );
+    let mut title = crate::tui::widgets::styled_title("Browse Modpacks", false);
+    let filter_count = state.active_filter_count();
+    if filter_count > 0 {
+        let label = if filter_count == 1 {
+            "1 filter".to_owned()
+        } else {
+            format!("{filter_count} filters")
+        };
+        title.spans.extend([
+            Span::raw(" "),
+            crate::tui::widgets::status_badge(label, theme.warning()),
+        ]);
+    }
     let mut block = Block::default()
-        .title(crate::tui::widgets::styled_title("Browse Modpacks", false))
+        .title(title)
         .title_bottom(
             super::super::keybind_line(keybinds).alignment(ratatui::layout::Alignment::Right),
         )
@@ -143,13 +160,34 @@ fn render_discovery(frame: &mut Frame, area: Rect, picker: &ratatui_image::picke
     crate::tui::widgets::content::tabs::render_discovery_popup(frame, inner, &mut state, picker);
 }
 
-fn discovery_keybinds(project_page_open: bool) -> &'static [(&'static str, &'static str)] {
+fn discovery_keybinds(
+    project_page_open: bool,
+    sort_panel_focused: bool,
+    filter_version_picker_open: bool,
+) -> &'static [(&'static str, &'static str)] {
     if project_page_open {
         &[
             ("j/k", " scroll"),
             ("g/G", " top/bottom"),
             ("v", " versions"),
             ("h", " back"),
+        ]
+    } else if filter_version_picker_open {
+        &[
+            ("j/k", " navigate"),
+            ("/", " search"),
+            ("s", " snapshots"),
+            ("r", " reset"),
+            ("h", " back"),
+            ("Enter", " select"),
+        ]
+    } else if sort_panel_focused {
+        &[
+            ("j/k", " navigate"),
+            ("Enter", " select"),
+            ("r", " reset"),
+            ("h/l", " tabs"),
+            ("f", " filters"),
         ]
     } else {
         &[
@@ -158,6 +196,7 @@ fn discovery_keybinds(project_page_open: bool) -> &'static [(&'static str, &'sta
             ("Enter", " view"),
             ("v", " versions"),
             ("/", " search"),
+            ("f", " filters"),
             ("i", " import"),
             ("Esc", " close"),
         ]

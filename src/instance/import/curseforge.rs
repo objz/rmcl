@@ -114,36 +114,16 @@ pub fn build_summary(path: &Path) -> Result<ImportSummary, String> {
 pub async fn execute_import(
     summary: &ImportSummary,
     manager: &InstanceManager,
-) -> Result<InstanceConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let name = super::unique_instance_name(&summary.name, &manager.instances_dir);
-    progress::set_action(format!("Importing '{name}'..."));
-    progress::set_sub_action(format!("{} {}", summary.game_version, summary.loader));
-    let config = manager
-        .create(
-            &name,
-            &summary.game_version,
-            summary.loader,
-            summary.loader_version.as_deref(),
-        )
-        .await
-        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+    config: &InstanceConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let minecraft_dir = manager
         .instances_dir
-        .join(&name)
+        .join(&config.name)
         .join(crate::storage::MINECRAFT_DIR_NAME);
-    let result = async {
-        let manifest = parse(&summary.archive_path)?;
-        download_files(&manifest, &minecraft_dir).await?;
-        extract_overrides(&summary.archive_path, &minecraft_dir, &manifest.overrides)?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }
-    .await;
-    if let Err(error) = result {
-        super::cleanup_failed_import(manager, &name);
-        return Err(error);
-    }
-    progress::clear();
-    Ok(config)
+    let manifest = parse(&summary.archive_path)?;
+    download_files(&manifest, &minecraft_dir).await?;
+    extract_overrides(&summary.archive_path, &minecraft_dir, &manifest.overrides)?;
+    Ok(())
 }
 
 async fn download_files(

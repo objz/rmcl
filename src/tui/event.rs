@@ -104,22 +104,14 @@ impl App {
                 if self.focused == FocusedArea::Content {
                     orphan_cleanup = orphan_cleanup.or_else(|| discovery.take_orphan_cleanup());
                 }
-                discovery.list.drain_pending();
-                discovery.list.request_image_loads(&self.picker);
-                discovery.list.drain_image_loads(&self.picker);
+                discovery.drain_list(&self.picker);
             }
             self.datapacks_discovery_state.drain_pending();
             if self.focused == FocusedArea::Content {
                 orphan_cleanup =
                     orphan_cleanup.or_else(|| self.datapacks_discovery_state.take_orphan_cleanup());
             }
-            self.datapacks_discovery_state.list.drain_pending();
-            self.datapacks_discovery_state
-                .list
-                .request_image_loads(&self.picker);
-            self.datapacks_discovery_state
-                .list
-                .drain_image_loads(&self.picker);
+            self.datapacks_discovery_state.drain_list(&self.picker);
             if let Some(popup) = self.datapacks_discovery_state.version_popup.as_mut() {
                 popup.worlds.request_image_loads(&self.picker);
                 popup.worlds.drain_image_loads(&self.picker);
@@ -165,7 +157,9 @@ impl App {
             self.ensure_provider_conflict_popup();
             self.ensure_active_discovery_loaded();
             let progress_active = progress::is_active();
-            let spinner_active = progress_active || crate::instance::runtime::has_active();
+            let spinner_active = progress_active
+                || crate::instance::runtime::has_active()
+                || self.discovery_activity().is_some();
             if spinner_active {
                 // only advance the spinner every 8 ticks to keep it readable
                 self.throbber_tick = self.throbber_tick.wrapping_add(1);

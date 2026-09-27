@@ -138,11 +138,13 @@ impl App {
             &mut self.settings_state,
             self.instances_state.selected_instance(),
         );
+        let discovery_activity = self.discovery_activity();
         widgets::status::render(
             frame,
             bottom_chunks[2],
             self.focused,
             &mut self.throbber_state,
+            discovery_activity,
         );
 
         if self.focused == FocusedArea::OverviewExpanded {
@@ -207,6 +209,9 @@ impl App {
                 main_chunks[1],
                 state,
                 &self.picker,
+                self.instances_state
+                    .selected_instance()
+                    .map(|instance| instance.game_version.as_str()),
             );
         }
 

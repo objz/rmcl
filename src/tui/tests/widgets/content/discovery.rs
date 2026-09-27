@@ -31,6 +31,54 @@ fn discovery_requests_four_viewport_pages() {
     assert_eq!(state.begin_modpack_search().limit, PAGE_SIZE);
 }
 
+#[test]
+fn discovery_reveals_rows_before_the_whole_page_is_drained() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let request = state.begin_search(&instance("one", "1.21.1"));
+    for index in 0..10 {
+        assert!(request.stream.upsert(project_entry(
+            DiscoveryProject {
+                id: index.to_string(),
+                slug: index.to_string(),
+                title: index.to_string(),
+                description: String::new(),
+                downloads: 0,
+                icon_url: None,
+                icon_bytes: None,
+            },
+            None,
+        )));
+    }
+    state.list.drain_pending();
+    assert_eq!(state.list.entries.len(), 4);
+    assert_eq!(state.list.filtered_indices().len(), 4);
+    drain_discovery_rows(&mut state);
+    assert_eq!(state.list.entries.len(), 10);
+}
+
+#[tokio::test]
+async fn discovery_icon_cache_reuses_only_the_matching_provider_project() {
+    let mut modrinth = project_entry(project("iris"), None);
+    modrinth.icon_bytes = Some(vec![1]);
+    let mut curseforge = modrinth.clone();
+    curseforge.provider_project.as_mut().unwrap().provider = "curseforge".to_owned();
+    curseforge.icon_bytes = Some(vec![2]);
+    let mut icons = cached_icons([&modrinth, &curseforge].into_iter());
+    let meta = tempfile::tempdir().unwrap();
+    assert_eq!(
+        cached_icon_bytes(&mut icons, meta.path(), "modrinth", "iris").await,
+        Some(vec![1])
+    );
+    assert_eq!(
+        cached_icon_bytes(&mut icons, meta.path(), "curseforge", "iris").await,
+        Some(vec![2])
+    );
+    assert_eq!(
+        cached_icon_bytes(&mut icons, meta.path(), "curseforge", "other").await,
+        None
+    );
+}
+
 fn instance(name: &str, version: &str) -> InstanceConfig {
     InstanceConfig {
         name: name.to_string(),
@@ -55,6 +103,10 @@ fn instance(name: &str, version: &str) -> InstanceConfig {
         config_sync_profile: None,
         modpack_source: None,
     }
+}
+
+fn drain_discovery_rows(state: &mut DiscoveryState) {
+    while state.list.drain_pending() {}
 }
 
 fn version(id: &str) -> VersionInfo {
@@ -88,6 +140,477 @@ fn project(id: &str) -> DiscoveryProject {
 fn content_mode_toggles_both_ways() {
     assert_eq!(ContentMode::Installed.toggle(), ContentMode::Discover);
     assert_eq!(ContentMode::Discover.toggle(), ContentMode::Installed);
+}
+
+#[test]
+fn sort_panel_keeps_results_navigation_available() {
+    use crate::instance::content::provider::DiscoverySort;
+
+    let mut state = DiscoveryState::new_modpacks();
+    state.list.entries = vec![
+        project_entry(project("one"), None),
+        project_entry(project("two"), None),
+    ];
+    state.list.list_state.selected = Some(0);
+
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state));
+    assert!(state.sort_panel_open);
+    assert!(state.sort_panel_focused);
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('h')), &mut state));
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state));
+    assert_eq!(state.list.list_state.selected, Some(1));
+
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('l')), &mut state));
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('l')), &mut state));
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state));
+    assert!(handle_key(&KeyEvent::from(KeyCode::Enter), &mut state));
+    assert_eq!(state.sort, DiscoverySort::Popular);
+    assert!(state.search_due());
+}
+
+#[test]
+fn local_mode_panel_does_not_consume_list_navigation() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.list.entries = vec![
+        project_entry(project("one"), None),
+        project_entry(project("two"), None),
+    ];
+    state.list.list_state.selected = Some(0);
+    state.set_local_mode(true);
+
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state));
+    assert!(state.sort_panel_open);
+    assert!(state.sort_panel_focused);
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('h')), &mut state));
+    assert!(!state.sort_panel_focused);
+
+    // In local mode j/k must be passed through (return false) so the caller
+    // can navigate its own installed list.
+    assert!(!handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state));
+    assert!(!handle_key(&KeyEvent::from(KeyCode::Char('k')), &mut state));
+}
+
+#[test]
+fn filter_panel_applies_version_environment_and_category_filters() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state);
+    assert_eq!(state.sort_panel_page, DiscoveryPanelPage::Filters);
+
+    handle_key(&KeyEvent::from(KeyCode::Right), &mut state);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.filters.environment, EnvironmentFilter::Client);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(
+        state.filters.categories.get("adventure"),
+        Some(&CategoryFilter::Include)
+    );
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(
+        state.filters.categories.get("adventure"),
+        Some(&CategoryFilter::Exclude)
+    );
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert!(!state.filters.categories.contains_key("adventure"));
+    handle_key(&KeyEvent::from(KeyCode::Char('h')), &mut state);
+    assert!(!state.sort_panel_focused);
+    assert!(state.search_due());
+}
+
+#[test]
+fn filters_match_environment_and_include_exclude_categories() {
+    let filters = DiscoveryFilters {
+        game_version: GameVersionFilter::Specific(std::collections::BTreeMap::from([(
+            "1.20.1".to_owned(),
+            CategoryFilter::Exclude,
+        )])),
+        environment: EnvironmentFilter::Client,
+        categories: std::collections::BTreeMap::from([
+            ("adventure".to_owned(), CategoryFilter::Include),
+            ("cursed".to_owned(), CategoryFilter::Exclude),
+        ]),
+    };
+    let metadata = crate::net::modrinth::DiscoveryMetadata {
+        categories: vec!["adventure".to_owned()],
+        versions: vec!["1.21.1".to_owned()],
+        client_side: "required".to_owned(),
+        server_side: "unsupported".to_owned(),
+    };
+    assert!(filters.matches(Some(&metadata)));
+    let excluded_version = crate::net::modrinth::DiscoveryMetadata {
+        versions: vec!["1.20.1".to_owned()],
+        ..metadata.clone()
+    };
+    assert!(!filters.matches(Some(&excluded_version)));
+    let excluded = crate::net::modrinth::DiscoveryMetadata {
+        categories: vec!["adventure".to_owned(), "cursed".to_owned()],
+        ..metadata
+    };
+    assert!(!filters.matches(Some(&excluded)));
+}
+
+#[test]
+fn preferred_provider_categories_only_map_shared_meanings() {
+    crate::net::curseforge::seed_discovery_categories_for_test();
+    let map =
+        |slug, from, to, kind, modpacks| category_for_provider(slug, from, to, kind, modpacks);
+    assert_eq!(
+        map("library", "modrinth", "curseforge", ContentKind::Mod, false),
+        Some("library-api")
+    );
+    assert_eq!(
+        map(
+            "library-api",
+            "curseforge",
+            "modrinth",
+            ContentKind::Mod,
+            false
+        ),
+        Some("library")
+    );
+    assert_eq!(
+        map(
+            "optimization",
+            "modrinth",
+            "curseforge",
+            ContentKind::Mod,
+            false
+        ),
+        Some("performance")
+    );
+    assert_eq!(
+        map(
+            "magic",
+            "curseforge",
+            "modrinth",
+            ContentKind::DataPack,
+            false
+        ),
+        Some("magic")
+    );
+    assert_eq!(
+        map(
+            "tech",
+            "curseforge",
+            "modrinth",
+            ContentKind::ResourcePack,
+            true
+        ),
+        Some("technology")
+    );
+    assert_eq!(
+        map("create", "curseforge", "modrinth", ContentKind::Mod, false),
+        None
+    );
+    assert_eq!(
+        map(
+            "blocks",
+            "modrinth",
+            "curseforge",
+            ContentKind::ResourcePack,
+            false
+        ),
+        None
+    );
+    let filters = DiscoveryFilters {
+        categories: std::collections::BTreeMap::from([(
+            map("library", "modrinth", "curseforge", ContentKind::Mod, false)
+                .unwrap()
+                .to_owned(),
+            CategoryFilter::Include,
+        )]),
+        ..Default::default()
+    };
+    let metadata = crate::net::modrinth::DiscoveryMetadata {
+        categories: vec!["library-api".to_owned()],
+        ..Default::default()
+    };
+    assert!(filters.matches(Some(&metadata)));
+}
+
+#[test]
+fn curseforge_discovery_uses_its_categories_and_supported_sorts() {
+    crate::net::curseforge::seed_discovery_categories_for_test();
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.category_provider = "curseforge".to_owned();
+    assert!(
+        state
+            .categories()
+            .iter()
+            .any(|(slug, label)| *slug == "library-api" && *label == "API and Library")
+    );
+    assert!(
+        !state
+            .categories()
+            .iter()
+            .any(|(slug, _)| *slug == "library")
+    );
+    assert_eq!(state.category_start(), 1);
+    assert!(!state.has_environment_filter());
+    assert_eq!(
+        state.sorts(),
+        &[
+            crate::instance::content::provider::DiscoverySort::Relevance,
+            crate::instance::content::provider::DiscoverySort::Popular,
+            crate::instance::content::provider::DiscoverySort::Released,
+            crate::instance::content::provider::DiscoverySort::Downloads,
+            crate::instance::content::provider::DiscoverySort::Updated
+        ]
+    );
+    state.filter_panel_selected = 1 + state
+        .categories()
+        .iter()
+        .position(|(slug, _)| *slug == "library-api")
+        .unwrap();
+    state.apply_selected_filter();
+    assert_eq!(
+        state.filters.categories.get("library-api"),
+        Some(&CategoryFilter::Include)
+    );
+}
+
+#[test]
+fn discovery_sort_cycles_up_down_then_best_match_up() {
+    use crate::instance::content::provider::DiscoverySort;
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    assert_eq!(state.sort, DiscoverySort::Relevance);
+    assert!(!state.sort_reversed);
+    state.sort_panel_selected = state
+        .sorts()
+        .iter()
+        .position(|sort| *sort == DiscoverySort::Downloads)
+        .unwrap();
+    state.apply_selected_sort();
+    assert_eq!(state.sort, DiscoverySort::Downloads);
+    assert!(!state.sort_reversed);
+    state.apply_selected_sort();
+    assert!(state.sort_reversed);
+    state.apply_selected_sort();
+    assert_eq!(state.sort, DiscoverySort::Relevance);
+    assert!(!state.sort_reversed);
+    state.sort_panel_selected = 0;
+    state.apply_selected_sort();
+    assert!(state.sort_reversed);
+    state.reset_sort();
+    assert_eq!(state.sort, DiscoverySort::Relevance);
+    assert!(!state.sort_reversed);
+}
+
+#[test]
+fn any_version_filter_requests_all_project_versions() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.filters.game_version = GameVersionFilter::Any;
+    state
+        .list
+        .entries
+        .push(project_entry(project("project"), None));
+    state.list.list_state.selected = Some(0);
+
+    assert!(state.begin_versions().unwrap().all_game_versions);
+}
+
+#[test]
+fn specific_version_filter_is_kept_for_project_versions() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.filters.game_version = GameVersionFilter::Specific(std::collections::BTreeMap::from([(
+        "1.20.1".to_owned(),
+        CategoryFilter::Include,
+    )]));
+    state
+        .list
+        .entries
+        .push(project_entry(project("project"), None));
+    state.list.list_state.selected = Some(0);
+
+    let request = state.begin_versions().unwrap();
+    assert!(!request.all_game_versions);
+    assert_eq!(request.game_version_overrides, ["1.20.1"]);
+}
+
+#[test]
+fn multiple_version_filter_is_kept_for_project_versions() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.filters.game_version = GameVersionFilter::Specific(
+        [
+            ("1.20.1".to_owned(), CategoryFilter::Include),
+            ("1.21.1".to_owned(), CategoryFilter::Include),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    state
+        .list
+        .entries
+        .push(project_entry(project("project"), None));
+    state.list.list_state.selected = Some(0);
+
+    let request = state.begin_versions().unwrap();
+    assert!(request.all_game_versions);
+    assert_eq!(request.game_version_overrides, ["1.20.1", "1.21.1"]);
+}
+
+#[test]
+fn filter_version_picker_cycles_include_and_exclude_inline() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert!(state.filter_version_picker_open);
+    *state.filter_game_versions.lock().unwrap() =
+        crate::tui::widgets::popups::LoadState::Loaded(vec![
+            crate::instance::loader::GameVersion {
+                id: "1.21.1".to_owned(),
+                stable: true,
+            },
+            crate::instance::loader::GameVersion {
+                id: "1.20.1".to_owned(),
+                stable: true,
+            },
+        ]);
+
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+
+    assert_eq!(
+        state.filters.game_version,
+        GameVersionFilter::Specific(std::collections::BTreeMap::from([
+            ("1.20.1".to_owned(), CategoryFilter::Include),
+            ("1.21.1".to_owned(), CategoryFilter::Exclude),
+        ]))
+    );
+    assert!(state.filter_version_picker_open);
+    assert!(state.search_due());
+}
+
+#[test]
+fn curseforge_version_picker_only_offers_supported_includes() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.category_provider = "curseforge".to_owned();
+    *state.filter_game_versions.lock().unwrap() =
+        crate::tui::widgets::popups::LoadState::Loaded(vec![
+            crate::instance::loader::GameVersion {
+                id: "1.21.1".to_owned(),
+                stable: true,
+            },
+        ]);
+    state.filter_version_picker_index = 2;
+    state.toggle_filter_game_version();
+    assert_eq!(
+        state.filters.game_version,
+        GameVersionFilter::Specific(std::collections::BTreeMap::from([(
+            "1.21.1".to_owned(),
+            CategoryFilter::Include
+        )]))
+    );
+    state.toggle_filter_game_version();
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+}
+
+#[test]
+fn resets_only_the_active_filter_section_or_sort() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.filters.environment = EnvironmentFilter::Client;
+    state
+        .filters
+        .categories
+        .insert("adventure".to_owned(), CategoryFilter::Include);
+    state.filters.game_version = GameVersionFilter::Any;
+    handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state);
+
+    handle_key(&KeyEvent::from(KeyCode::Char('r')), &mut state);
+
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+    assert_eq!(state.filters.environment, EnvironmentFilter::Any);
+    assert!(state.filters.categories.is_empty());
+    assert!(state.search_due());
+
+    state.sort = crate::instance::content::provider::DiscoverySort::Popular;
+    handle_key(&KeyEvent::from(KeyCode::Char('l')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('r')), &mut state);
+    assert_eq!(
+        state.sort,
+        crate::instance::content::provider::DiscoverySort::Relevance
+    );
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+
+    handle_key(&KeyEvent::from(KeyCode::Char('h')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert!(state.filter_version_picker_open);
+    handle_key(&KeyEvent::from(KeyCode::Char('r')), &mut state);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+}
+
+#[test]
+fn modpack_version_reset_restores_any() {
+    let mut state = DiscoveryState::new_modpacks();
+    state.filters.game_version = GameVersionFilter::Current;
+    handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('r')), &mut state);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+}
+
+#[test]
+fn installed_and_discovery_filters_stay_separate() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.filters.environment = EnvironmentFilter::Client;
+    state.set_local_mode(true);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+    assert_eq!(state.filters.environment, EnvironmentFilter::Any);
+    state.filters.environment = EnvironmentFilter::Server;
+    state.filters.game_version = GameVersionFilter::Current;
+    state.set_local_mode(false);
+    assert_eq!(state.filters.environment, EnvironmentFilter::Client);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+    state.set_local_mode(true);
+    assert_eq!(state.filters.environment, EnvironmentFilter::Server);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+    state.reset_game_versions();
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+    assert!(!state.search_due());
+}
+
+#[test]
+fn installed_sort_panel_has_local_fields_and_direction() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.set_local_mode(true);
+    assert_eq!(state.local_sort_index, 5);
+    assert!(!state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Char('f')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('l')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.local_sort_index, 6);
+    assert!(!state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Right), &mut state);
+    assert_eq!(state.local_sort_index, 6);
+    assert!(!state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert!(state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.local_sort_index, 5);
+    assert!(!state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.local_sort_index, 6);
+    assert!(!state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('j')), &mut state);
+    assert_eq!(state.sort_panel_selected, 2);
+    handle_key(&KeyEvent::from(KeyCode::Char('r')), &mut state);
+    assert_eq!(state.local_sort_index, 5);
+    handle_key(&KeyEvent::from(KeyCode::Char('k')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Char('k')), &mut state);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.local_sort_index, 5);
+    assert!(state.local_sort_descending);
+    handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+    assert_eq!(state.local_sort_index, 5);
+    assert!(!state.local_sort_descending);
 }
 
 #[test]
@@ -126,6 +649,7 @@ fn provider_merge_preserves_ranking_and_appends_fallbacks() {
                 "modrinth",
                 DiscoveryResults {
                     projects: vec![modrinth_first, modrinth_second],
+                    metadata: HashMap::new(),
                     received: 2,
                     total_hits: 2,
                 },
@@ -134,6 +658,7 @@ fn provider_merge_preserves_ranking_and_appends_fallbacks() {
                 "curseforge",
                 DiscoveryResults {
                     projects: vec![curseforge_duplicate, curseforge_fallback],
+                    metadata: HashMap::new(),
                     received: 2,
                     total_hits: 2,
                 },
@@ -167,6 +692,7 @@ fn provider_merge_keeps_same_provider_title_collisions() {
             "modrinth",
             DiscoveryResults {
                 projects: vec![first, second],
+                metadata: HashMap::new(),
                 received: 2,
                 total_hits: 2,
             },
@@ -191,6 +717,7 @@ fn provider_merge_keeps_the_preferred_project_across_pages() {
             "curseforge",
             DiscoveryResults {
                 projects: vec![fallback],
+                metadata: HashMap::new(),
                 received: 1,
                 total_hits: 200,
             },
@@ -212,6 +739,7 @@ fn provider_merge_uses_the_longest_provider_result_range() {
                 "modrinth",
                 DiscoveryResults {
                     projects: vec![],
+                    metadata: HashMap::new(),
                     received: 20,
                     total_hits: 20,
                 },
@@ -220,6 +748,7 @@ fn provider_merge_uses_the_longest_provider_result_range() {
                 "curseforge",
                 DiscoveryResults {
                     projects: vec![],
+                    metadata: HashMap::new(),
                     received: 50,
                     total_hits: 200,
                 },
@@ -600,7 +1129,7 @@ fn project_page_loads_for_the_selected_discovery_entry() {
         DiscoveryActionResult::ProjectPage {
             request_id: request.request_id,
             project_id: request.project_id,
-            result: Ok(crate::net::modrinth::ProjectInfo {
+            result: Box::new(Ok(crate::net::modrinth::ProjectInfo {
                 id: "project".to_owned(),
                 slug: "project".to_owned(),
                 title: "Project page".to_owned(),
@@ -611,7 +1140,8 @@ fn project_page_loads_for_the_selected_discovery_entry() {
                 additional_categories: Vec::new(),
                 project_type: "mod".to_owned(),
                 loaders: Vec::new(),
-            }),
+                ..crate::net::modrinth::ProjectInfo::default()
+            })),
         },
     );
 
@@ -630,11 +1160,34 @@ fn project_page_loads_for_the_selected_discovery_entry() {
 }
 
 #[test]
+fn project_pages_with_matching_ids_are_cached_by_provider() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let mut entry = project_entry(project("shared"), None);
+    state.project_pages.insert(
+        ("modrinth".to_owned(), "shared".to_owned()),
+        crate::net::modrinth::ProjectInfo {
+            id: "shared".to_owned(),
+            title: "Modrinth project".to_owned(),
+            ..Default::default()
+        },
+    );
+    entry.provider_project.as_mut().unwrap().provider = "curseforge".to_owned();
+    state.list.entries.push(entry);
+    state.list.list_state.selected = Some(0);
+
+    let request = state.begin_project_page().unwrap();
+    assert_eq!(request.provider, "curseforge");
+    assert!(request.cached_project.is_none());
+    assert!(state.project_page.as_ref().unwrap().document.is_none());
+}
+
+#[test]
 fn project_page_navigation_is_bounded_and_can_go_back() {
     let mut state = DiscoveryState::new(ContentKind::Mod);
     state.project_page = Some(ProjectPageState {
         request_id: 1,
         project_id: "project".to_owned(),
+        provider: "modrinth".to_owned(),
         title: "Project".to_owned(),
         document: Some(crate::tui::widgets::markdown::Document::new(
             "Project", "Body",
@@ -678,6 +1231,7 @@ fn version_popup_owns_navigation_over_a_project_page() {
     state.project_page = Some(ProjectPageState {
         request_id: 1,
         project_id: "project".to_owned(),
+        provider: "modrinth".to_owned(),
         title: "Project".to_owned(),
         document: None,
         error: None,
@@ -799,6 +1353,162 @@ fn dependency_resolution_opens_the_existing_confirmation() {
     assert!(!popup.loading);
     assert!(popup.dependency_plan.is_some());
     assert!(state.begin_install().unwrap().dependency_plan.is_some());
+}
+
+fn confirming_state_with_plan() -> DiscoveryState {
+    let project = DiscoveryProject {
+        id: "project".to_owned(),
+        slug: "project".to_owned(),
+        title: "Project".to_owned(),
+        description: String::new(),
+        downloads: 0,
+        icon_url: None,
+        icon_bytes: None,
+    };
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    state.list.entries.push(project_entry(project, None));
+    state.list.list_state.selected = Some(0);
+    let versions = state.begin_versions().unwrap();
+    DiscoveryState::push_action_result(
+        &versions.pending,
+        DiscoveryActionResult::Versions {
+            request_id: versions.request_id,
+            project_id: versions.project_id,
+            result: Ok(vec![version("1.0.0")]),
+        },
+    );
+    state.drain_pending();
+    let request = state.begin_dependency_resolution().unwrap();
+    let root_version = request.root.version.clone();
+    let mut dep_version = version("0.9.0");
+    dep_version.project_id = "dependency".to_owned();
+    let planned = |title: &str, version: VersionInfo| {
+        crate::instance::content::dependencies::PlannedInstall {
+            provider: "modrinth".to_owned(),
+            project_id: title.to_owned(),
+            title: title.to_owned(),
+            version,
+            installed_path: None,
+            kind: crate::instance::ContentKind::Mod,
+            destination: std::path::PathBuf::from("mods"),
+            provider_aliases: Vec::new(),
+            required_dependencies: Vec::new(),
+            automatic_dependency: false,
+            cleanup_eligible: false,
+            replacement: true,
+        }
+    };
+    DiscoveryState::push_action_result(
+        &request.pending,
+        DiscoveryActionResult::Dependencies {
+            request_id: request.request_id,
+            project_id: request.project_id,
+            result: Ok(crate::instance::content::dependencies::DependencyPlan {
+                items: vec![
+                    planned("project", root_version),
+                    planned("dependency", dep_version),
+                ],
+                root_count: 1,
+                optional_dependencies: 1,
+            }),
+        },
+    );
+    state.drain_pending();
+    assert!(state.version_popup.as_ref().unwrap().confirming);
+    state
+}
+
+#[test]
+fn confirming_popup_toggles_skip_dependencies_with_s() {
+    let mut state = confirming_state_with_plan();
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(state.version_popup.as_ref().unwrap().skip_dependencies);
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+
+    // Toggling is blocked while loading or installing.
+    state.version_popup.as_mut().unwrap().loading = true;
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+    state.version_popup.as_mut().unwrap().loading = false;
+    state.version_popup.as_mut().unwrap().installing = true;
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+}
+
+#[test]
+fn skip_dependencies_does_nothing_without_dependency_changes() {
+    let mut state = confirming_state_with_plan();
+    let popup = state.version_popup.as_mut().unwrap();
+    let plan = popup.dependency_plan.as_mut().unwrap();
+    plan.items.truncate(plan.root_count);
+    plan.optional_dependencies = 0;
+    assert!(!plan.has_dependency_changes());
+
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+
+    let install = state.begin_install().unwrap();
+    assert_eq!(install.dependency_plan.unwrap().items.len(), 1);
+}
+
+#[test]
+fn skipped_dependencies_install_only_the_root() {
+    let mut state = confirming_state_with_plan();
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+
+    let install = state.begin_install().unwrap();
+    let plan = install.dependency_plan.as_ref().unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert_eq!(plan.items[0].title, "project");
+    assert_eq!(plan.root_count, 1);
+    assert_eq!(plan.optional_dependencies, 0);
+}
+
+#[test]
+fn fresh_dependency_plan_resets_skip_dependencies() {
+    let mut state = confirming_state_with_plan();
+    assert!(handle_key(&KeyEvent::from(KeyCode::Char('s')), &mut state));
+    assert!(state.version_popup.as_ref().unwrap().skip_dependencies);
+
+    let popup = state.version_popup.as_ref().unwrap();
+    let (request_id, project_id, pending) = (
+        popup.request_id,
+        popup.project_id.clone(),
+        state.pending_actions.clone(),
+    );
+    DiscoveryState::push_action_result(
+        &pending,
+        DiscoveryActionResult::Dependencies {
+            request_id,
+            project_id,
+            result: Ok(crate::instance::content::dependencies::DependencyPlan {
+                items: Vec::new(),
+                root_count: 0,
+                optional_dependencies: 0,
+            }),
+        },
+    );
+    state.drain_pending();
+    assert!(!state.version_popup.as_ref().unwrap().skip_dependencies);
+}
+
+#[test]
+fn installed_mode_defaults_to_any_game_version() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Current);
+    assert_eq!(state.active_filter_count(), 0);
+
+    state.set_local_mode(true);
+    assert_eq!(state.filters.game_version, GameVersionFilter::Any);
+    assert_eq!(state.active_filter_count(), 0);
+
+    // The same Any filter counts as active in discovery mode.
+    state.set_local_mode(false);
+    state.filters.game_version = GameVersionFilter::Any;
+    assert_eq!(state.active_filter_count(), 1);
 }
 
 #[test]
@@ -1084,7 +1794,7 @@ fn next_page_prefetches_before_selection_reaches_the_end() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     DiscoveryState::push_result(
         &first.pending,
         first.generation,
@@ -1121,7 +1831,7 @@ fn large_page_fills_a_tall_viewport_without_another_request() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     DiscoveryState::push_result(
         &first.pending,
         first.generation,
@@ -1154,7 +1864,7 @@ fn typing_keeps_loaded_results_until_remote_search_is_due() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
 
     handle_key(
         &KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
@@ -1193,17 +1903,256 @@ fn search_refresh_keeps_rows_until_the_diff_arrives() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     state.search.query = "sodium".to_owned();
     state.search_changed();
 
     let refresh = state.begin_search(&instance);
 
     assert!(refresh.reconcile);
-    assert!(refresh.loaded_icon_stems.contains("sodium"));
-    assert!(!refresh.loaded_icon_stems.contains("lithium"));
     assert_eq!(state.list.entries.len(), 2);
     assert!(!state.list.loading);
+}
+
+#[tokio::test]
+async fn filtered_refresh_waits_for_finished_icons_before_switching_rows() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let instance = instance("one", "1.21.1");
+    let initial = state.begin_search(&instance);
+    initial.stream.upsert(project_entry(project("old"), None));
+    initial
+        .stream
+        .upsert(project_entry(project("another"), None));
+    drain_discovery_rows(&mut state);
+    state.list.list_state.selected = Some(1);
+
+    state.filter_panel_selected = state.category_start();
+    state.apply_selected_filter();
+    assert!(!state.filters.categories.is_empty());
+    let refresh = state.begin_search(&instance);
+    assert!(refresh.reconcile);
+    let stems = (0..8)
+        .map(|index| {
+            let mut project = project(&format!("new-{index}"));
+            if index == 7 {
+                project.icon_url = Some("https://example.invalid/icon".to_owned());
+            } else {
+                project.icon_bytes = Some(png.get_ref().clone());
+            }
+            let stem = project.id.clone();
+            refresh.stream.upsert(project_entry(project, None));
+            stem
+        })
+        .collect();
+    state.drain_list(&picker);
+    assert_eq!(state.list.entries.len(), 2);
+    assert_eq!(state.list.entries[0].name, "old");
+    refresh.stream.order(stems);
+    DiscoveryState::push_result(
+        &refresh.pending,
+        refresh.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 8,
+            total_hits: 8,
+        }),
+    );
+    state.drain_pending();
+    state.drain_list(&picker);
+    assert_eq!(state.list.entries[0].name, "old");
+    assert!(state.preparing_list.as_ref().unwrap().has_pending_icons());
+    refresh.stream.send_icon_unavailable(
+        "new-7".to_owned(),
+        "new-7".into(),
+        Some(("modrinth".to_owned(), "new-7".to_owned())),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state.preparing_list.is_some() {
+            state.drain_list(&picker);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(state.list.entries.len(), 8);
+    assert_eq!(state.list.list_state.selected, Some(1));
+    assert!(!state.list.has_pending_icons());
+    assert_eq!(state.list.filtered_indices().len(), 8);
+    assert!(
+        state
+            .list
+            .entries
+            .iter()
+            .all(|entry| entry.name.starts_with("new-"))
+    );
+}
+
+#[test]
+fn discovery_activity_tracks_search_pages_and_icon_loading() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let instance = instance("one", "1.21.1");
+    assert_eq!(state.activity_label(), None);
+    let first = state.begin_search(&instance);
+    assert_eq!(state.activity_label(), Some("Searching Discovery..."));
+    let mut entry = project_entry(project("icon"), None);
+    entry.provider_icon = true;
+    first.stream.upsert(entry);
+    state.list.drain_pending();
+    DiscoveryState::push_result(
+        &first.pending,
+        first.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 1,
+            total_hits: 100,
+        }),
+    );
+    state.drain_pending();
+    assert_eq!(state.activity_label(), Some("Loading Discovery icons..."));
+    first
+        .stream
+        .send_icon_unavailable("icon".to_owned(), "icon".into(), None);
+    state.list.drain_pending();
+    assert_eq!(state.activity_label(), None);
+    let _next = state.begin_next_page().unwrap();
+    assert_eq!(state.activity_label(), Some("Loading more results..."));
+    state.page_loading = false;
+    state.filter_version_picker_open = true;
+    *state.filter_game_versions.lock().unwrap() = crate::tui::widgets::popups::LoadState::Loading;
+    assert_eq!(state.activity_label(), Some("Loading game versions..."));
+}
+
+#[test]
+fn rapidly_cycling_a_category_discards_superseded_rows_and_results() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let instance = instance("one", "1.21.1");
+    let first = state.begin_search(&instance);
+    assert!(
+        first
+            .stream
+            .upsert(project_entry(project("original"), None))
+    );
+    drain_discovery_rows(&mut state);
+    state.filter_panel_selected = state.category_start()
+        + state
+            .categories()
+            .iter()
+            .position(|(slug, _)| *slug == "management")
+            .unwrap();
+
+    state.apply_selected_filter(); // include
+    assert!(!first.stream.upsert(project_entry(project("late"), None)));
+    DiscoveryState::push_result(
+        &first.pending,
+        first.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 10,
+            total_hits: 100,
+        }),
+    );
+    state.drain_pending();
+    state.list.drain_pending();
+    assert_eq!(state.list.entries.len(), 1);
+    assert_eq!(state.list.entries[0].name, "original");
+    assert_eq!(state.total_hits, 0);
+
+    let include = state.begin_search(&instance);
+    include
+        .stream
+        .upsert(project_entry(project("wrong-filter"), None));
+    state.drain_list(&picker);
+    assert_eq!(state.list.entries[0].name, "original");
+    state.apply_selected_filter(); // exclude before include returns
+    assert!(
+        !include
+            .stream
+            .upsert(project_entry(project("wrong-filter"), None))
+    );
+    state.list.drain_pending();
+    assert_eq!(state.list.entries.len(), 1);
+    assert!(state.search_due());
+
+    let exclude = state.begin_search(&instance);
+    exclude
+        .stream
+        .upsert(project_entry(project("excluded"), None));
+    exclude.stream.order(vec!["excluded".to_owned()]);
+    DiscoveryState::push_result(
+        &exclude.pending,
+        exclude.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 1,
+            total_hits: 1,
+        }),
+    );
+    state.drain_pending();
+    state.drain_list(&picker);
+    assert_eq!(state.list.entries[0].name, "excluded");
+}
+
+#[test]
+fn discovery_restores_cached_sort_and_continues_pagination() {
+    let mut state = DiscoveryState::new(ContentKind::Mod);
+    let instance = instance("one", "1.21.1");
+    let first = state.begin_search(&instance);
+    assert!(first.stream.upsert(project_entry(
+        DiscoveryProject {
+            id: "cached".to_owned(),
+            slug: "cached".to_owned(),
+            title: "Cached".to_owned(),
+            description: String::new(),
+            downloads: 0,
+            icon_url: None,
+            icon_bytes: None,
+        },
+        None,
+    )));
+    assert!(first.stream.upsert(project_entry(project("second"), None)));
+    drain_discovery_rows(&mut state);
+    DiscoveryState::push_result(
+        &first.pending,
+        first.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 2,
+            total_hits: 20,
+        }),
+    );
+    state.drain_pending();
+    state.sort = crate::instance::content::provider::DiscoverySort::Popular;
+    let other = state.begin_search(&instance);
+    assert!(!other.cached);
+    state.list.list_state.selected = Some(1);
+    state.sort = crate::instance::content::provider::DiscoverySort::Relevance;
+    let restored = state.begin_search(&instance);
+    assert!(restored.cached);
+    assert!(!state.list.loading);
+    assert_eq!(state.list.entries[0].name, "Cached");
+    assert_eq!(state.list.list_state.selected, Some(1));
+    assert_eq!(state.next_offset, 2);
+    assert_eq!(state.total_hits, 20);
+    DiscoveryState::push_result(
+        &other.pending,
+        other.generation,
+        0,
+        Ok(DiscoveryPageResult {
+            received: 3,
+            total_hits: 99,
+        }),
+    );
+    state.drain_pending();
+    assert_eq!(state.total_hits, 20);
+    let next = state.begin_next_page().unwrap();
+    assert_eq!(next.offset, 2);
+    assert!(!next.cached);
 }
 
 #[test]
@@ -1225,7 +2174,7 @@ fn pagination_continues_across_multiple_pages() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     DiscoveryState::push_result(
         &first.pending,
         first.generation,
@@ -1253,7 +2202,7 @@ fn pagination_continues_across_multiple_pages() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     DiscoveryState::push_result(
         &second.pending,
         second.generation,
@@ -1288,7 +2237,7 @@ fn permanent_pagination_failure_stops_without_discarding_loaded_entries() {
             None
         )));
     }
-    state.list.drain_pending();
+    drain_discovery_rows(&mut state);
     DiscoveryState::push_result(
         &first.pending,
         first.generation,

@@ -110,9 +110,7 @@ pub fn open() {
 pub fn drain(picker: &ratatui_image::picker::Picker) {
     if let Ok(mut state) = DISCOVERY_STATE.lock() {
         state.drain_pending();
-        state.list.drain_pending();
-        state.list.request_image_loads(picker);
-        state.list.drain_image_loads(picker);
+        state.drain_list(picker);
         if state.search_due() {
             drop(state);
             start_discovery_search();
@@ -124,6 +122,18 @@ pub fn has_version_popup() -> bool {
     DISCOVERY_STATE
         .lock()
         .is_ok_and(|state| state.version_popup.is_some())
+}
+
+pub fn discovery_activity() -> Option<&'static str> {
+    let wizard = IMPORT_STATE.lock().ok()?;
+    let step = wizard.step.clone();
+    let loading_versions = matches!(wizard.versions, LoadState::Loading);
+    drop(wizard);
+    match step {
+        ImportStep::Discover => DISCOVERY_STATE.lock().ok()?.activity_label(),
+        ImportStep::Version if loading_versions => Some("Loading modpack versions..."),
+        _ => None,
+    }
 }
 
 pub fn handle_discovery_click(x: u16, y: u16) -> bool {
@@ -161,27 +171,33 @@ fn handle_discovery_key(key_event: &KeyEvent, instances_state: &mut instances::S
     let search_active = discovery.search.active;
     let popup_open = discovery.version_popup.is_some();
     let project_page_open = discovery.project_page_open();
+    let sort_panel_open = discovery.sort_panel_open;
+    let sort_panel_focused = discovery.sort_panel_focused;
     match key_event.code {
-        KeyCode::Esc if !search_active && !popup_open && !project_page_open => {
+        KeyCode::Esc if !search_active && !popup_open && !project_page_open && !sort_panel_open => {
             drop(discovery);
             if let Ok(mut state) = IMPORT_STATE.lock() {
                 close_popup(&mut state, instances_state);
             }
         }
-        KeyCode::Char('i') if !search_active && !popup_open && !project_page_open => {
+        KeyCode::Char('i')
+            if !search_active && !popup_open && !project_page_open && !sort_panel_focused =>
+        {
             drop(discovery);
             if let Ok(mut state) = IMPORT_STATE.lock() {
                 state.step = ImportStep::Input;
             }
         }
-        KeyCode::Enter if !search_active && !popup_open && !project_page_open => {
+        KeyCode::Enter
+            if !search_active && !popup_open && !project_page_open && !sort_panel_focused =>
+        {
             let request = discovery.begin_project_page();
             drop(discovery);
             if let Some(request) = request {
                 crate::tui::widgets::content::discovery::spawn_project_page(request);
             }
         }
-        KeyCode::Char('v') if !search_active && !popup_open => {
+        KeyCode::Char('v') if !search_active && !popup_open && !sort_panel_focused => {
             let request = discovery.begin_versions();
             drop(discovery);
             if let Some(request) = request {

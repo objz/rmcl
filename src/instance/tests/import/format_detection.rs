@@ -91,6 +91,15 @@ fn unique_name_with_collision() {
 }
 
 #[test]
+fn unique_name_preserves_directory_without_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("TestPack")).unwrap();
+
+    assert_eq!(unique_instance_name("TestPack", tmp.path()), "TestPack (2)");
+    assert!(tmp.path().join("TestPack").exists());
+}
+
+#[test]
 fn unique_name_multiple_collisions() {
     let tmp = tempfile::tempdir().unwrap();
     for suffix in ["", " (2)", " (3)"] {
@@ -172,4 +181,35 @@ fn failed_import_cleanup_removes_the_partial_instance() {
     cleanup_failed_import(&manager, "Broken");
 
     assert!(!instance_dir.exists());
+}
+
+#[tokio::test]
+async fn failed_import_creation_clears_progress_without_removing_existing_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manager = InstanceManager::new(tmp.path().join("instances"), tmp.path().join("meta"));
+    let summary = ImportSummary {
+        name: "../invalid".to_owned(),
+        pack_version: String::new(),
+        game_version: "1.20.1".to_owned(),
+        loader: ModLoader::Vanilla,
+        loader_version: None,
+        mod_count: 0,
+        override_count: 0,
+        format: PackFormat::Mmc,
+        archive_path: tmp.path().join("missing.zip"),
+        source: None,
+    };
+    let preserved = tmp.path().join("invalid");
+    std::fs::write(&preserved, b"keep").unwrap();
+
+    assert!(execute_import(&summary, &manager).await.is_err());
+    assert_eq!(std::fs::read(preserved).unwrap(), b"keep");
+    assert!(
+        !crate::feedback::progress::PROGRESS
+            .lock()
+            .unwrap()
+            .current_action
+            .as_deref()
+            .is_some_and(|action| action.contains("../invalid"))
+    );
 }

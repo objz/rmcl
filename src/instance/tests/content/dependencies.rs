@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use super::*;
-use crate::instance::content::provider::{FingerprintQuery, ResolvedFile};
+use crate::instance::content::provider::{DiscoverySort, FingerprintQuery, ResolvedFile};
 use crate::instance::{FileFingerprint, ModLoader, Resolution};
 use crate::net::modrinth::{
     DependencyType, DiscoveryResults, ProjectInfo, VersionDependency, VersionType,
@@ -91,6 +91,9 @@ impl ContentProvider for FakeProvider {
         _kind: ContentKind,
         _query: &str,
         _instance: &InstanceConfig,
+        _filters: &crate::instance::content::provider::DiscoverySearchFilters,
+        _sort: DiscoverySort,
+        _reversed: bool,
         _offset: usize,
         _limit: usize,
     ) -> Result<DiscoveryResults, NetError> {
@@ -100,6 +103,9 @@ impl ContentProvider for FakeProvider {
     async fn search_modpacks(
         &self,
         _query: &str,
+        _filters: &crate::instance::content::provider::DiscoverySearchFilters,
+        _sort: DiscoverySort,
+        _reversed: bool,
         _offset: usize,
         _limit: usize,
     ) -> Result<DiscoveryResults, NetError> {
@@ -149,6 +155,7 @@ impl ContentProvider for FakeProvider {
                 .cloned()
                 .unwrap_or_else(|| "mod".to_owned()),
             loaders: Vec::new(),
+            ..ProjectInfo::default()
         })
     }
 
@@ -433,6 +440,7 @@ fn legacy_modrinth_datapack_projects_are_classified_by_loader() {
         additional_categories: Vec::new(),
         project_type: "mod".to_owned(),
         loaders: vec!["datapack".to_owned()],
+        ..ProjectInfo::default()
     };
 
     assert_eq!(

@@ -24,6 +24,7 @@ pub fn render(
     area: Rect,
     focused: FocusedArea,
     throbber_state: &mut ThrobberState,
+    discovery_activity: Option<&str>,
 ) {
     let theme = THEME.as_ref();
     let border_color = if focused == FocusedArea::Overview {
@@ -50,7 +51,7 @@ pub fn render(
         }
     };
 
-    if state.current_action.is_none() {
+    if state.current_action.is_none() && discovery_activity.is_none() {
         frame.render_widget(
             Paragraph::new(Span::styled("Ready", Style::default().fg(theme.text_dim())))
                 .block(block),
@@ -62,7 +63,11 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let action_text = state.current_action.as_deref().unwrap_or("");
+    let action_text = state
+        .current_action
+        .as_deref()
+        .or(discovery_activity)
+        .unwrap_or("");
     let sub_text = state.sub_action.as_deref().unwrap_or("");
 
     match state.progress {

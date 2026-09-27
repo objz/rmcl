@@ -17,10 +17,11 @@ use ratatui::{
 };
 
 use super::{
-    ContentListState, WatcherEventHandling, available_description_width, description_text_width,
-    diff_directory, diff_event_paths, ellipsize, load_provider_metadata, read_dir_stems,
-    right_aligned_footer_spans, square_icon_columns, title_suffix_spans, version_change_spans,
-    watcher_event_handling, world_descriptions, world_game_mode_color,
+    ContentListState, ContentStreamOrder, PendingContentImage, WatcherEventHandling,
+    available_description_width, description_text_width, diff_directory, diff_event_paths,
+    ellipsize, load_provider_metadata, read_dir_stems, right_aligned_footer_spans,
+    square_icon_columns, title_suffix_spans, version_change_spans, watcher_event_handling,
+    world_descriptions, world_game_mode_color,
 };
 
 fn entry(name: &str) -> ContentEntry {
@@ -61,6 +62,195 @@ fn selected_provider_project_tracks_the_filtered_selection() {
     assert!(!state.selected_has_provider_project());
     state.search.query = "provider".to_owned();
     assert!(state.selected_has_provider_project());
+}
+
+#[test]
+fn installed_file_size_sort_changes_direction() {
+    let temp = tempfile::tempdir().unwrap();
+    let small = temp.path().join("small.jar");
+    let large = temp.path().join("large.jar");
+    std::fs::write(&small, b"a").unwrap();
+    std::fs::write(&large, b"longer").unwrap();
+    let mut state = ContentListState {
+        entries: vec![entry("Small"), entry("Large")],
+        local_sort_index: 6,
+        ..Default::default()
+    };
+    state.entries[0].path = small;
+    state.entries[1].path = large;
+    assert_eq!(state.filtered_indices(), [0, 1]);
+    state.local_sort_descending = true;
+    assert_eq!(state.filtered_indices(), [1, 0]);
+    std::fs::write(&state.entries[0].path, b"much longer now").unwrap();
+    assert_eq!(state.filtered_indices(), [1, 0]);
+    state.set_entries(state.entries.clone());
+    assert_eq!(state.filtered_indices(), [0, 1]);
+    state.search.query = "large".to_owned();
+    assert_eq!(state.filtered_indices(), [1]);
+    state.search.query.clear();
+    assert_eq!(state.filtered_indices(), [0, 1]);
+}
+
+#[test]
+fn sort_and_filter_keep_the_selected_row_number() {
+    use crate::tui::widgets::content::discovery::{DiscoveryFilters, GameVersionFilter};
+
+    let mut state = ContentListState {
+        entries: vec![
+            entry("Alpha"),
+            entry("Beta"),
+            entry("Gamma"),
+            entry("Delta"),
+        ],
+        ..Default::default()
+    };
+    state.list_state.selected = Some(2);
+    let filters = DiscoveryFilters {
+        game_version: GameVersionFilter::Any,
+        ..Default::default()
+    };
+    state.set_installed_options(&filters, 5, true, "1.21.1", false);
+    assert_eq!(state.list_state.selected, Some(2));
+    assert_eq!(state.selected_entry().unwrap().name, "Beta");
+    state.list_state.selected = Some(0);
+    state.set_installed_options(&filters, 5, false, "1.21.1", false);
+    assert_eq!(state.list_state.selected, Some(0));
+    assert_eq!(state.selected_entry().unwrap().name, "Alpha");
+
+    state.list_state.selected = Some(2);
+    state.search.query = "Beta".to_owned();
+    state.set_search_filtering(true);
+    assert_eq!(state.list_state.selected, Some(0));
+    assert_eq!(state.selected_entry().unwrap().name, "Beta");
+}
+
+#[test]
+fn cached_rows_keep_matching_rendered_icons_only() {
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let mut state = ContentListState::default();
+    let mut project = entry("Alpha");
+    project.icon_bytes = Some(vec![1]);
+    project.provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "alpha".to_owned(),
+        version_id: String::new(),
+    });
+    state.entries.push(project.clone());
+    state.image_protocols.insert(
+        project.file_stem.clone(),
+        picker.new_resize_protocol(image::DynamicImage::new_rgba8(1, 1)),
+    );
+    state.set_entries(vec![project.clone()]);
+    assert!(state.image_protocols.contains_key("alpha"));
+    assert!(state.requested_images.contains("alpha"));
+
+    project.provider_project.as_mut().unwrap().provider = "curseforge".to_owned();
+    state.set_entries(vec![project]);
+    assert!(state.image_protocols.is_empty());
+    assert!(state.requested_images.is_empty());
+}
+
+#[test]
+fn file_sort_cache_refreshes_when_watcher_replaces_a_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let small = temp.path().join("small.jar");
+    let large = temp.path().join("large.jar");
+    std::fs::write(&small, b"a").unwrap();
+    std::fs::write(&large, b"longer").unwrap();
+    let mut state = ContentListState {
+        entries: vec![entry("Small"), entry("Large")],
+        local_sort_index: 6,
+        ..Default::default()
+    };
+    state.entries[0].path = small.clone();
+    state.entries[1].path = large;
+    assert_eq!(state.filtered_indices(), [0, 1]);
+    std::fs::write(&small, b"much longer now").unwrap();
+    let mut replacement = entry("Small");
+    replacement.path = small;
+    *state.watcher_diff.lock().unwrap() = Some(super::WatcherDiff {
+        toggled: Vec::new(),
+        removed: vec!["small".to_owned()],
+        added: vec![replacement],
+    });
+    state.drain_watcher();
+    assert_eq!(state.filtered_indices(), [1, 0]);
+}
+
+#[test]
+fn installed_name_fallback_sorts_both_directions() {
+    let mut state = ContentListState {
+        entries: vec![entry("Zebra"), entry("Axiom")],
+        ..Default::default()
+    };
+    state.set_installed_options(
+        &crate::tui::widgets::content::discovery::DiscoveryFilters {
+            game_version: crate::tui::widgets::content::discovery::GameVersionFilter::Any,
+            ..Default::default()
+        },
+        5,
+        false,
+        "1.21.1",
+        false,
+    );
+    assert_eq!(state.filtered_indices(), [1, 0]);
+    state.local_sort_descending = true;
+    assert_eq!(state.filtered_indices(), [0, 1]);
+}
+
+#[test]
+fn installed_filters_use_cached_project_and_version_metadata() {
+    use crate::tui::widgets::content::discovery::{
+        CategoryFilter, DiscoveryFilters, GameVersionFilter,
+    };
+
+    let mut state = ContentListState {
+        entries: vec![entry("Unmatched"), entry("Matching")],
+        ..Default::default()
+    };
+    state.entries[1].provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "matching".to_owned(),
+        version_id: "version".to_owned(),
+    });
+    state.project_metadata.insert(
+        ("modrinth".to_owned(), "matching".to_owned()),
+        crate::net::modrinth::ProjectInfo {
+            categories: vec!["adventure".to_owned()],
+            ..Default::default()
+        },
+    );
+    state.version_metadata.insert(
+        ("modrinth".to_owned(), "version".to_owned()),
+        crate::net::modrinth::VersionInfo {
+            id: "version".to_owned(),
+            project_id: "matching".to_owned(),
+            name: String::new(),
+            version_number: String::new(),
+            game_versions: vec!["1.21.1".to_owned()],
+            loaders: Vec::new(),
+            version_type: Default::default(),
+            dependencies: Vec::new(),
+            date_published: String::new(),
+            files: Vec::new(),
+        },
+    );
+    let filters = DiscoveryFilters {
+        game_version: GameVersionFilter::Specific(std::collections::BTreeMap::from([(
+            "1.21.1".to_owned(),
+            CategoryFilter::Include,
+        )])),
+        categories: std::collections::BTreeMap::from([(
+            "adventure".to_owned(),
+            CategoryFilter::Include,
+        )]),
+        ..Default::default()
+    };
+    state.set_installed_options(&filters, 0, false, "1.21.1", true);
+    assert_eq!(state.filtered_indices(), [1]);
+    state.local_game_version = "1.20.1".to_owned();
+    state.local_filters.game_version = GameVersionFilter::Current;
+    assert!(state.filtered_indices().is_empty());
 }
 
 #[test]
@@ -365,7 +555,12 @@ fn content_stream_inserts_entries_and_icons_incrementally() {
     assert!(!state.loading);
 
     assert!(stream.send(entry("Alpha")));
-    assert!(stream.send_icon("alpha".to_owned(), PathBuf::from("alpha"), vec![1, 2, 3],));
+    assert!(stream.send_icon(
+        "alpha".to_owned(),
+        PathBuf::from("alpha"),
+        vec![1, 2, 3],
+        None
+    ));
     state.drain_pending();
 
     assert_eq!(
@@ -436,6 +631,252 @@ fn source_refresh_reconciles_without_rebuilding_unchanged_entries() {
     );
     assert_eq!(state.list_state.selected, Some(0));
     assert!(!state.loading);
+}
+
+#[test]
+fn discovery_preview_moves_rows_before_the_final_order_arrives() {
+    let mut state = ContentListState::default();
+    let initial = state.start_source_stream("remote");
+    initial.upsert(entry("Alpha"));
+    initial.upsert(entry("Beta"));
+    state.drain_pending();
+    state.list_state.selected = Some(0);
+    let refresh = state.refresh_source_stream("remote");
+    refresh.preview(entry("Beta"));
+    refresh.preview(entry("Gamma"));
+    state.drain_pending();
+    let names = |state: &ContentListState| {
+        state
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&state), ["Beta", "Gamma", "Alpha"]);
+    assert_eq!(state.list_state.selected, Some(0));
+    assert_eq!(state.selected_entry().unwrap().name, "Beta");
+    refresh.upsert(entry("Delta"));
+    refresh.order(vec![
+        "beta".to_owned(),
+        "delta".to_owned(),
+        "gamma".to_owned(),
+    ]);
+    state.drain_pending();
+    assert_eq!(names(&state), ["Beta", "Delta", "Gamma"]);
+    assert_eq!(state.list_state.selected, Some(0));
+    refresh.append_preview();
+    refresh.preview(entry("Epsilon"));
+    state.drain_pending();
+    assert_eq!(names(&state), ["Beta", "Delta", "Gamma", "Epsilon"]);
+}
+
+#[test]
+fn discovery_stream_shows_each_row_after_its_icon_is_ready() {
+    let mut state = ContentListState::default();
+    let stream = state.start_source_stream("discovery");
+    state.show_source_rows_progressively();
+    let mut alpha = entry("Alpha");
+    alpha.provider_icon = true;
+    alpha.icon_bytes = Some(vec![1]);
+    stream.upsert(alpha);
+    stream.upsert(entry("Beta"));
+    state.drain_pending();
+    assert_eq!(
+        state
+            .filtered_indices()
+            .iter()
+            .map(|&i| state.entries[i].name.as_str())
+            .collect::<Vec<_>>(),
+        ["Beta"]
+    );
+
+    state
+        .pending_images
+        .lock()
+        .unwrap()
+        .push(PendingContentImage {
+            file_stem: "alpha".to_owned(),
+            path: state.entries[0].path.clone(),
+            source: None,
+            icon_bytes: vec![1],
+            icon_lines: crate::instance::content::fallback_icon(),
+            image: None,
+        });
+    state.drain_image_loads(&ratatui_image::picker::Picker::halfblocks());
+    assert_eq!(state.filtered_indices().len(), 2);
+}
+
+#[test]
+fn stale_decoded_icon_does_not_replace_a_new_source_or_new_bytes() {
+    let mut state = ContentListState {
+        stream_order: ContentStreamOrder::Source,
+        ..Default::default()
+    };
+    let mut project = entry("Alpha");
+    project.provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "123".to_owned(),
+        version_id: String::new(),
+    });
+    project.icon_bytes = Some(vec![1]);
+    state.entries.push(project.clone());
+    let stale = PendingContentImage {
+        file_stem: project.file_stem.clone(),
+        path: project.path.clone(),
+        source: project.provider_project.clone(),
+        icon_bytes: vec![1],
+        icon_lines: crate::instance::content::fallback_icon(),
+        image: None,
+    };
+    state.pending_entry_images.insert(project.file_stem.clone());
+    state.entries[0].provider_project.as_mut().unwrap().provider = "curseforge".to_owned();
+    state.pending_images.lock().unwrap().push(stale);
+    state.drain_image_loads(&ratatui_image::picker::Picker::halfblocks());
+    assert!(state.pending_entry_images.contains(&project.file_stem));
+
+    state.entries[0].provider_project = project.provider_project;
+    state.entries[0].icon_bytes = Some(vec![2]);
+    state
+        .pending_images
+        .lock()
+        .unwrap()
+        .push(PendingContentImage {
+            file_stem: project.file_stem.clone(),
+            path: project.path,
+            source: state.entries[0].provider_project.clone(),
+            icon_bytes: vec![1],
+            icon_lines: crate::instance::content::fallback_icon(),
+            image: None,
+        });
+    state.drain_image_loads(&ratatui_image::picker::Picker::halfblocks());
+    assert!(state.pending_entry_images.contains(&project.file_stem));
+}
+
+#[test]
+fn current_version_keeps_unidentified_installed_files_visible() {
+    let mut state = ContentListState::default();
+    state.entries.push(entry("Local file"));
+    state.set_installed_options(
+        &crate::tui::widgets::content::discovery::DiscoveryFilters::default(),
+        5,
+        false,
+        "1.21.1",
+        false,
+    );
+    assert_eq!(state.filtered_indices(), [0]);
+}
+
+#[test]
+fn stale_provider_icon_cannot_replace_a_new_provider_row() {
+    let mut state = ContentListState::default();
+    let stream = state.start_source_stream("discovery");
+    let mut project = entry("Alpha");
+    project.provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "123".to_owned(),
+        version_id: String::new(),
+    });
+    project.provider_icon = true;
+    stream.upsert(project);
+    stream.send_icon(
+        "alpha".to_owned(),
+        PathBuf::from("alpha"),
+        vec![1],
+        Some(("curseforge".to_owned(), "456".to_owned())),
+    );
+    stream.send_icon_unavailable(
+        "alpha".to_owned(),
+        PathBuf::from("alpha"),
+        Some(("curseforge".to_owned(), "456".to_owned())),
+    );
+    state.drain_pending();
+    assert!(state.entries[0].icon_bytes.is_none());
+    assert!(state.entries[0].provider_icon);
+    assert!(state.has_pending_icons());
+    stream.send_icon(
+        "alpha".to_owned(),
+        PathBuf::from("alpha"),
+        vec![2],
+        Some(("modrinth".to_owned(), "123".to_owned())),
+    );
+    state.drain_pending();
+    assert_eq!(state.entries[0].icon_bytes.as_deref(), Some([2].as_slice()));
+}
+
+#[test]
+fn source_refresh_reuses_a_decoded_icon_only_for_the_same_provider() {
+    let mut state = ContentListState::default();
+    let stream = state.start_source_stream("discovery");
+    let mut project = entry("Alpha");
+    project.icon_bytes = Some(vec![1]);
+    project.provider_icon = true;
+    project.provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "123".to_owned(),
+        version_id: String::new(),
+    });
+    stream.upsert(project.clone());
+    state.drain_pending();
+    let mut rendered_icon = crate::instance::content::fallback_icon();
+    rendered_icon[0][0].symbol = 'X';
+    state.entries[0].icon_lines = Some(rendered_icon);
+    state.pending_entry_images.remove("alpha");
+    state.requested_images.insert("alpha".to_owned());
+
+    let refresh = state.refresh_source_stream("discovery");
+    refresh.upsert(project.clone());
+    state.drain_pending();
+    assert_eq!(
+        state.entries[0].icon_lines.as_ref().unwrap()[0][0].symbol,
+        'X'
+    );
+    assert!(!state.has_pending_icons());
+
+    project.provider_project.as_mut().unwrap().provider = "curseforge".to_owned();
+    refresh.upsert(project);
+    state.drain_pending();
+    assert!(state.has_pending_icons());
+    assert!(!state.requested_images.contains("alpha"));
+}
+
+#[test]
+fn discovery_icon_decode_survives_installed_version_binding() {
+    let mut state = ContentListState::default();
+    let stream = state.start_source_stream("discovery");
+    let mut project = entry("Alpha");
+    project.icon_bytes = Some(vec![1]);
+    project.provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "123".to_owned(),
+        version_id: String::new(),
+    });
+    stream.upsert(project.clone());
+    state.drain_pending();
+    state.entries[0]
+        .provider_project
+        .as_mut()
+        .unwrap()
+        .version_id = "installed".to_owned();
+    let mut icon_lines = crate::instance::content::fallback_icon();
+    icon_lines[0][0].symbol = 'X';
+    state
+        .pending_images
+        .lock()
+        .unwrap()
+        .push(PendingContentImage {
+            file_stem: project.file_stem,
+            path: project.path,
+            source: project.provider_project,
+            icon_bytes: vec![1],
+            icon_lines,
+            image: None,
+        });
+    state.drain_image_loads(&ratatui_image::picker::Picker::halfblocks());
+    assert!(!state.has_pending_icons());
+    assert_eq!(
+        state.entries[0].icon_lines.as_ref().unwrap()[0][0].symbol,
+        'X'
+    );
 }
 
 #[test]
@@ -525,6 +966,69 @@ fn streamed_entries_without_icons_are_visible_immediately() {
     assert_eq!(state.filtered_indices(), vec![0]);
 }
 
+#[tokio::test]
+async fn installed_icon_decode_survives_manifest_binding_and_cache_restore() {
+    let mut state = ContentListState::default();
+    state.set_installed_options(
+        &crate::tui::widgets::content::discovery::DiscoveryFilters::default(),
+        5,
+        false,
+        "26.2",
+        false,
+    );
+    let stream = state.start_stream("main");
+    let mut mod_entry = entry("Fabric API");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    mod_entry.icon_bytes = Some(png.into_inner());
+    mod_entry.icon_lines =
+        crate::instance::content::make_icon_pixels(mod_entry.icon_bytes.as_ref().unwrap(), 6, 3);
+    stream.send(mod_entry);
+    state.drain_pending();
+    assert!(state.filtered_indices().is_empty());
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    state.request_image_loads(&picker);
+    state.entries[0].provider_project = Some(crate::instance::ProviderProject {
+        provider: "modrinth".to_owned(),
+        project_id: "fabric-api".to_owned(),
+        version_id: "version".to_owned(),
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.filtered_indices().is_empty() {
+            state.drain_image_loads(&picker);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("installed icon decoded after manifest binding");
+
+    let directory = tempfile::tempdir().unwrap();
+    state.start_load(
+        directory.path(),
+        "other",
+        crate::instance::content::mods::scan_one_mod,
+        "jar",
+    );
+    state.start_load(
+        directory.path(),
+        "main",
+        crate::instance::content::mods::scan_one_mod,
+        "jar",
+    );
+    assert!(state.filtered_indices().is_empty());
+    state.request_image_loads(&picker);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.filtered_indices().is_empty() {
+            state.drain_image_loads(&picker);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cached installed icon decoded");
+}
+
 #[test]
 fn rendering_visible_entries_restores_the_first_selection() {
     let mut state = ContentListState::default();
@@ -550,6 +1054,98 @@ fn rendering_visible_entries_restores_the_first_selection() {
         .unwrap();
 
     assert_eq!(state.list_state.selected, Some(0));
+}
+
+#[test]
+fn incompatible_installed_version_renders_red_footer() {
+    use crate::net::modrinth::{VersionInfo, VersionType};
+
+    fn installed_entry(
+        name: &str,
+        project_id: &str,
+        version_id: &str,
+        footer: &str,
+    ) -> ContentEntry {
+        let mut item = entry(name);
+        item.footer_label = Some(footer.to_owned());
+        item.provider_project = Some(crate::instance::ProviderProject {
+            provider: "modrinth".to_owned(),
+            project_id: project_id.to_owned(),
+            version_id: version_id.to_owned(),
+        });
+        item
+    }
+    fn version_metadata(game_versions: &[&str]) -> VersionInfo {
+        VersionInfo {
+            id: "version".to_owned(),
+            project_id: "project".to_owned(),
+            name: "Version".to_owned(),
+            version_number: "1.0".to_owned(),
+            game_versions: game_versions
+                .iter()
+                .map(|version| (*version).to_owned())
+                .collect(),
+            loaders: vec!["fabric".to_owned()],
+            version_type: VersionType::Release,
+            dependencies: Vec::new(),
+            date_published: String::new(),
+            files: Vec::new(),
+        }
+    }
+
+    let mut state = ContentListState {
+        entries: vec![
+            installed_entry("Good", "good", "good-v1", "1.0.0+mc1.21.1"),
+            installed_entry("Bad", "bad", "bad-v1", "0.9.0+mc1.20.1"),
+        ],
+        ..ContentListState::default()
+    };
+    state.local_game_version = "1.21.1".to_owned();
+    state.version_metadata.insert(
+        ("modrinth".to_owned(), "good-v1".to_owned()),
+        version_metadata(&["1.21.1"]),
+    );
+    state.version_metadata.insert(
+        ("modrinth".to_owned(), "bad-v1".to_owned()),
+        version_metadata(&["1.20.1"]),
+    );
+    state.rebuild_display_metadata();
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render(
+                frame,
+                frame.area(),
+                &mut state,
+                true,
+                "Loading...",
+                "Empty",
+                &picker,
+                false,
+                false,
+            );
+        })
+        .unwrap();
+
+    let theme = crate::config::theme::THEME.as_ref();
+    let buffer = terminal.backend().buffer().clone();
+    let row_text = |y: u16| {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_owned())
+            .collect::<String>()
+    };
+    let footer_color = |footer: &str| {
+        (0..buffer.area.height).find_map(|y| {
+            let row = row_text(y);
+            row.find(footer).map(|start| {
+                let start = u16::try_from(start).unwrap();
+                buffer[(start, y)].fg
+            })
+        })
+    };
+    assert_eq!(footer_color("1.0.0+mc1.21.1"), Some(theme.text()));
+    assert_eq!(footer_color("0.9.0+mc1.20.1"), Some(theme.error()));
 }
 
 #[test]
@@ -717,6 +1313,9 @@ fn provider_metadata_fills_a_missing_installed_description() {
             project_id: "shader-project".to_owned(),
             bytes: Vec::new(),
             description: "A cached shader description".to_owned(),
+            project: crate::net::modrinth::ProjectInfo::default(),
+            version_id: "version".to_owned(),
+            version: None,
         });
 
     assert!(state.drain_provider_icons());
@@ -755,6 +1354,7 @@ async fn provider_metadata_loads_from_cache_without_network() {
             additional_categories: Vec::new(),
             project_type: "mod".to_owned(),
             loaders: Vec::new(),
+            ..crate::net::modrinth::ProjectInfo::default()
         })
         .unwrap(),
     )
@@ -765,11 +1365,15 @@ async fn provider_metadata_loads_from_cache_without_network() {
         project_id: "cached-project".to_owned(),
         version_id: "cached-version".to_owned(),
     };
-    let (bytes, description) =
-        load_provider_metadata(&crate::net::HttpClient::new(), temp.path(), &installed)
-            .await
-            .unwrap();
+    let (bytes, project) = load_provider_metadata(
+        &crate::net::HttpClient::new(),
+        temp.path(),
+        &installed,
+        false,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(bytes, png);
-    assert_eq!(description, "Cached description");
+    assert_eq!(project.description, "Cached description");
 }

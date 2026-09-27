@@ -86,6 +86,12 @@ impl DependencyPlan {
             .skip(self.root_count)
             .filter(|item| item.replacement)
     }
+
+    pub fn has_dependency_changes(&self) -> bool {
+        self.dependency_installs().next().is_some()
+            || self.dependency_replacements().next().is_some()
+            || self.optional_dependencies > 0
+    }
 }
 
 pub async fn install(
@@ -101,8 +107,7 @@ pub async fn install(
     for item in &plan.items {
         tokio::fs::create_dir_all(&item.destination).await?;
     }
-    let staging = staging_directory(minecraft_dir);
-    tokio::fs::create_dir(&staging).await?;
+    let staging = create_staging_directory(minecraft_dir).await?;
 
     let result = install_staged(registry, manifest_path, minecraft_dir, &staging, plan).await;
     if let Err(error) = tokio::fs::remove_dir_all(&staging).await
@@ -126,6 +131,17 @@ fn staging_directory(minecraft_dir: &Path) -> PathBuf {
         ".rmcl-install-{}",
         NEXT_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+async fn create_staging_directory(minecraft_dir: &Path) -> Result<PathBuf, NetError> {
+    loop {
+        let staging = staging_directory(minecraft_dir);
+        match tokio::fs::create_dir(&staging).await {
+            Ok(()) => return Ok(staging),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 struct StagedFile {

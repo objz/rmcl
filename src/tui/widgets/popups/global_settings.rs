@@ -1400,6 +1400,7 @@ mod tests {
     #[test]
     fn launcher_choices_toggles_and_maintenance_are_interactive() {
         let mut state = State::new();
+        state.config.ui.image_protocol = ImageProtocol::Auto;
         state.selected = 2;
         state.handle_key(&KeyEvent::from(KeyCode::Enter));
         assert_eq!(state.choice_picker, Some(ChoicePicker::ImageProtocol));

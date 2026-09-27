@@ -4,6 +4,27 @@
 use super::*;
 
 #[test]
+fn search_category_ids_match_the_selected_class() {
+    let response: ApiResponse<Vec<SearchCategory>> = serde_json::from_str(r#"{"data":[{"id":6,"slug":"mc-mods","name":"Mods","classId":null},{"id":11,"slug":"magic","name":"Magic","classId":6},{"id":22,"slug":"magic","name":"Magic","classId":4471}]}"#).unwrap();
+    assert_eq!(category_id(&response.data, 6, "magic"), Some(11));
+    assert_eq!(category_id(&response.data, 4471, "magic"), Some(22));
+    assert_eq!(category_id(&response.data, 12, "magic"), None);
+}
+
+#[test]
+fn search_versions_use_curseforge_array_encoding() {
+    assert!(search_version_params(&[]).is_empty());
+    assert_eq!(
+        search_version_params(&["1.21.1".to_owned()]),
+        ["gameVersion=1.21.1"]
+    );
+    assert_eq!(
+        search_version_params(&["1.21.1".to_owned(), "1.20.1".to_owned()]),
+        ["gameVersions=%5B%221.21.1%22%2C%221.20.1%22%5D"]
+    );
+}
+
+#[test]
 fn curseforge_file_maps_to_shared_version() {
     let file: File = serde_json::from_str(
         r#"{
@@ -79,6 +100,18 @@ fn discovery_hides_projects_that_block_third_party_downloads() {
 #[test]
 fn datapack_discovery_uses_the_curseforge_data_packs_class() {
     assert_eq!(class_id(ContentKind::DataPack), 6945);
+}
+
+#[test]
+fn discovery_sort_maps_to_curseforge_fields() {
+    use crate::instance::content::provider::DiscoverySort;
+
+    assert_eq!(curseforge_sort_field(DiscoverySort::Relevance, "sodium"), 2);
+    assert_eq!(curseforge_sort_field(DiscoverySort::Relevance, ""), 6);
+    assert_eq!(curseforge_sort_field(DiscoverySort::Downloads, ""), 6);
+    assert_eq!(curseforge_sort_field(DiscoverySort::Popular, ""), 2);
+    assert_eq!(curseforge_sort_field(DiscoverySort::Updated, ""), 3);
+    assert_eq!(curseforge_sort_field(DiscoverySort::Released, ""), 11);
 }
 
 #[tokio::test]

@@ -149,52 +149,34 @@ fn count_overrides(mrpack_path: &Path) -> Result<usize, String> {
 pub async fn execute_import(
     summary: &ImportSummary,
     manager: &InstanceManager,
-) -> Result<crate::instance::InstanceConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let name = super::unique_instance_name(&summary.name, &manager.instances_dir);
+    config: &crate::instance::InstanceConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(
         "Importing Modrinth pack '{}' as instance '{}'",
         summary.name,
-        name
+        config.name
     );
-
-    progress::set_action(format!("Importing '{name}'..."));
-    progress::set_sub_action(format!("{} {}", summary.game_version, summary.loader));
-
-    let config = manager
-        .create(
-            &name,
-            &summary.game_version,
-            summary.loader,
-            summary.loader_version.as_deref(),
-        )
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     let minecraft_dir = manager
         .instances_dir
-        .join(&name)
+        .join(&config.name)
         .join(crate::storage::MINECRAFT_DIR_NAME);
 
-    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-        let index = parse_mrpack(&summary.archive_path)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-        download_mod_files(&index, &minecraft_dir).await?;
-        extract_overrides(&summary.archive_path, &minecraft_dir)?;
-        seed_content_manifest(
-            &index,
-            &InstancePaths::new(manager.instances_dir.join(&name)),
-        )?;
-        Ok(())
-    }
-    .await;
-    if let Err(error) = result {
-        super::cleanup_failed_import(manager, &name);
-        return Err(error);
-    }
+    let index = parse_mrpack(&summary.archive_path)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    download_mod_files(&index, &minecraft_dir).await?;
+    extract_overrides(&summary.archive_path, &minecraft_dir)?;
+    seed_content_manifest(
+        &index,
+        &InstancePaths::new(manager.instances_dir.join(&config.name)),
+    )?;
 
-    progress::clear();
-    tracing::info!("Imported Modrinth pack '{}' as '{}'", summary.name, name);
-    Ok(config)
+    tracing::info!(
+        "Imported Modrinth pack '{}' as '{}'",
+        summary.name,
+        config.name
+    );
+    Ok(())
 }
 
 // downloads all mod files listed in the mrpack index, capped at 10 concurrent

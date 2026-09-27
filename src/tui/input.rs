@@ -417,6 +417,18 @@ impl App {
 
         // content area delegates to whichever tab is active.
         // worlds use the same list navigation without the toggle
+        if self.focused == FocusedArea::Content
+            && self.content_mode == widgets::content::ContentMode::Installed
+            && let Some(state) = self.active_discovery_state_mut()
+            && state.version_popup.is_none()
+            && !state.project_page_open()
+            && (state.sort_panel_open || key_event.code == KeyCode::Char('f'))
+        {
+            state.set_local_mode(true);
+            if widgets::content::discovery::handle_key(&key_event, state) {
+                return Ok(());
+            }
+        }
         let discovery_popup_open = self
             .active_discovery_state()
             .is_some_and(|state| state.version_popup.is_some() || state.project_page_open());
@@ -424,31 +436,38 @@ impl App {
             && (self.content_mode == widgets::content::ContentMode::Discover
                 || discovery_popup_open)
         {
-            let (search_active, popup_open, project_page_open) = self
+            let (search_active, popup_open, project_page_open, sort_panel_focused) = self
                 .active_discovery_state_mut()
                 .map(|state| {
                     (
                         state.search.active,
                         state.version_popup.is_some(),
                         state.project_page_open(),
+                        state.sort_panel_focused,
                     )
                 })
                 .unwrap_or_default();
             if !search_active
                 && !popup_open
                 && !project_page_open
+                && !sort_panel_focused
                 && key_event.code == KeyCode::Enter
             {
                 self.spawn_active_discovery_project_page();
                 return Ok(());
             }
-            if !search_active && !popup_open && key_event.code == KeyCode::Char('v') {
+            if !search_active
+                && !popup_open
+                && !sort_panel_focused
+                && key_event.code == KeyCode::Char('v')
+            {
                 self.spawn_active_discovery_versions();
                 return Ok(());
             }
             if !search_active
                 && !popup_open
                 && !project_page_open
+                && !sort_panel_focused
                 && key_event.code == KeyCode::Char('d')
             {
                 if let Some(pending) = self
@@ -521,14 +540,20 @@ impl App {
                 self.spawn_active_discovery_version_source();
                 return Ok(());
             }
-            let handled = self
-                .active_discovery_state_mut()
-                .is_some_and(|state| widgets::content::discovery::handle_key(&key_event, state));
+            let installed = self.content_mode == widgets::content::ContentMode::Installed;
+            let handled = self.active_discovery_state_mut().is_some_and(|state| {
+                state.set_local_mode(installed);
+                widgets::content::discovery::handle_key(&key_event, state)
+            });
             if handled {
-                if matches!(
-                    key_event.code,
-                    KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Down | KeyCode::Up
-                ) || widgets::content::discovery::page_key_direction(&key_event).is_some()
+                let overlay_open = self.active_discovery_state().is_some_and(|state| {
+                    state.version_popup.is_some() || state.project_page_open()
+                });
+                if !overlay_open
+                    && (matches!(
+                        key_event.code,
+                        KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Down | KeyCode::Up
+                    ) || widgets::content::discovery::page_key_direction(&key_event).is_some())
                 {
                     self.spawn_active_discovery_page();
                 }
@@ -992,6 +1017,11 @@ impl App {
                         if self.content_mode == widgets::content::ContentMode::Discover {
                             self.open_world_datapacks = None;
                         }
+                        let installed =
+                            self.content_mode == widgets::content::ContentMode::Installed;
+                        if let Some(state) = self.active_discovery_state_mut() {
+                            state.set_local_mode(installed);
+                        }
                         self.ensure_active_discovery_loaded();
                     }
                     KeyCode::Char('l') | KeyCode::Right if self.focused == FocusedArea::Content => {
@@ -1399,6 +1429,19 @@ impl App {
         }
     }
 
+    pub(super) fn discovery_activity(&self) -> Option<&'static str> {
+        if self.instances_state.show_import_popup {
+            return widgets::popups::import_modpack::discovery_activity();
+        }
+        if self.content_mode != widgets::content::ContentMode::Discover
+            || self.instances_state.selected_instance().is_none()
+        {
+            return None;
+        }
+        self.active_discovery_state()
+            .and_then(widgets::content::discovery::DiscoveryState::activity_label)
+    }
+
     fn spawn_bulk_content_updates(&mut self) {
         if self.content_update_popup.is_some() {
             return;
@@ -1683,7 +1726,7 @@ impl App {
     }
 
     fn spawn_active_discovery_dependencies(&mut self) {
-        let Some(instance) = self.instances_state.selected_instance().cloned() else {
+        let Some(mut instance) = self.instances_state.selected_instance().cloned() else {
             return;
         };
         let Some(request) = self
@@ -1696,6 +1739,9 @@ impl App {
             self.instance_manager.instances_dir.join(&instance.name),
         );
         tokio::spawn(async move {
+            if let Some(game_version) = request.game_version {
+                instance.game_version = game_version;
+            }
             let result = async {
                 let manifest = crate::instance::ContentManifest::load(&paths.content_manifest())
                     .map_err(|error| crate::net::NetError::Parse(error.to_string()))?;
@@ -1730,12 +1776,19 @@ impl App {
         kind: crate::instance::ContentKind,
         request: widgets::content::discovery::VersionsRequest,
     ) {
+        let game_version = if !request.game_version_overrides.is_empty() {
+            request.game_version_overrides.join("+")
+        } else if request.all_game_versions {
+            "any".to_owned()
+        } else {
+            instance.game_version.clone()
+        };
         let version_cache = crate::storage::MetadataPaths::new(&self.instance_manager.meta_dir)
             .provider_versions(&request.provider)
             .join(&request.project_id)
             .join(format!(
                 "{}-{}.json",
-                instance.game_version,
+                game_version,
                 instance.loader.to_string().to_lowercase()
             ));
         tokio::spawn(async move {
@@ -1747,12 +1800,25 @@ impl App {
                     .compatible_versions(
                         &request.project_id,
                         kind,
-                        &instance.game_version,
+                        if request.game_version_overrides.len() == 1 {
+                            &request.game_version_overrides[0]
+                        } else if request.all_game_versions {
+                            ""
+                        } else {
+                            &instance.game_version
+                        },
                         instance.loader,
                     )
                     .await
                 {
                     Ok(mut versions) => {
+                        if request.game_version_overrides.len() > 1 {
+                            versions.retain(|version| {
+                                version.game_versions.iter().any(|game_version| {
+                                    request.game_version_overrides.contains(game_version)
+                                })
+                            });
+                        }
                         if let Some(current) = request.current_version_id.as_deref()
                             && !versions.iter().any(|version| version.id == current)
                             && let Ok(version) = provider.version(current).await
@@ -1976,6 +2042,11 @@ impl App {
         let kind = state.kind;
         let query = state.search.query.clone();
         let request = state.begin_search(&instance);
+        if request.cached
+            && let Some(manifest) = &manifest
+        {
+            state.refresh_installed_manifest(manifest, &minecraft_dir);
+        }
         Self::spawn_discovery_request(
             instance,
             kind,

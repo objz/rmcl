@@ -140,21 +140,13 @@ pub fn build_summary(path: &Path) -> Result<ImportSummary, String> {
 
 pub fn unique_instance_name(base: &str, instances_dir: &Path) -> String {
     let candidate = base.to_string();
-    if !instances_dir
-        .join(&candidate)
-        .join("instance.json")
-        .exists()
-    {
+    if !instances_dir.join(&candidate).exists() {
         tracing::trace!("Import instance name '{}' is available", candidate);
         return candidate;
     }
     for n in 2..100 {
         let candidate = format!("{base} ({n})");
-        if !instances_dir
-            .join(&candidate)
-            .join("instance.json")
-            .exists()
-        {
+        if !instances_dir.join(&candidate).exists() {
             tracing::debug!(
                 "Import instance name '{}' collided; using '{}'",
                 base,
@@ -180,32 +172,52 @@ pub async fn execute_import(
         summary.name,
         summary.archive_path.display()
     );
-    let mut config = match summary.format {
-        PackFormat::CurseForge => curseforge::execute_import(summary, manager).await,
-        PackFormat::Mrpack => mrpack::execute_import(summary, manager).await,
-        PackFormat::Mmc => mmc::execute_import(summary, manager).await,
-    }?;
-    if summary.source.is_some() {
-        config.modpack_source = summary.source.clone();
-        manager.save(&config)?;
-        let state = match owned_files(summary).await {
-            Ok(files) => refresh::PackState {
-                source: summary.source.clone().expect("source checked above"),
-                files,
-            },
-            Err(error) => {
-                cleanup_failed_import(manager, &config.name);
-                return Err(error.into());
-            }
-        };
-        if let Err(error) = state.save(&crate::storage::InstancePaths::new(
-            manager.instances_dir.join(&config.name),
-        )) {
-            cleanup_failed_import(manager, &config.name);
-            return Err(error.into());
+    let name = unique_instance_name(&summary.name, &manager.instances_dir);
+    crate::feedback::progress::set_action(format!("Importing '{name}'..."));
+    crate::feedback::progress::set_sub_action(format!(
+        "{} {}",
+        summary.game_version, summary.loader
+    ));
+    let config = manager
+        .create(
+            &name,
+            &summary.game_version,
+            summary.loader,
+            summary.loader_version.as_deref(),
+        )
+        .await;
+    let mut config = match config {
+        Ok(config) => config,
+        Err(error) => {
+            crate::feedback::progress::clear();
+            return Err(Box::new(error));
         }
+    };
+    let result = async {
+        match summary.format {
+            PackFormat::CurseForge => curseforge::execute_import(summary, manager, &config).await?,
+            PackFormat::Mrpack => mrpack::execute_import(summary, manager, &config).await?,
+            PackFormat::Mmc => mmc::execute_import(summary, manager, &config).await?,
+        }
+        if let Some(source) = &summary.source {
+            config.modpack_source = Some(source.clone());
+            manager.save(&config)?;
+            let state = refresh::PackState {
+                source: source.clone(),
+                files: owned_files(summary).await?,
+            };
+            state.save(&crate::storage::InstancePaths::new(
+                manager.instances_dir.join(&config.name),
+            ))?;
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(config)
     }
-    Ok(config)
+    .await;
+    crate::feedback::progress::clear();
+    if result.is_err() {
+        cleanup_failed_import(manager, &name);
+    }
+    result
 }
 
 pub async fn provider_versions(
@@ -267,7 +279,6 @@ async fn owned_files(summary: &ImportSummary) -> Result<Vec<PathBuf>, String> {
 }
 
 fn cleanup_failed_import(manager: &InstanceManager, name: &str) {
-    crate::feedback::progress::clear();
     let instance_dir = manager.instances_dir.join(name);
     if let Err(error) = std::fs::remove_dir_all(&instance_dir)
         && error.kind() != std::io::ErrorKind::NotFound

@@ -97,43 +97,26 @@ pub fn build_summary(path: &Path) -> Result<ImportSummary, String> {
 pub async fn execute_import(
     summary: &ImportSummary,
     manager: &InstanceManager,
-) -> Result<crate::instance::InstanceConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let name = super::unique_instance_name(&summary.name, &manager.instances_dir);
+    config: &crate::instance::InstanceConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(
         "Importing MultiMC/Prism pack '{}' as instance '{}'",
         summary.name,
-        name
+        config.name
     );
-
-    progress::set_action(format!("Importing '{name}'..."));
-    progress::set_sub_action(format!("{} {}", summary.game_version, summary.loader));
-
-    let config = manager
-        .create(
-            &name,
-            &summary.game_version,
-            summary.loader,
-            summary.loader_version.as_deref(),
-        )
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     let minecraft_dir = manager
         .instances_dir
-        .join(&name)
+        .join(&config.name)
         .join(crate::storage::MINECRAFT_DIR_NAME);
-    if let Err(error) = extract_mmc_archive(&summary.archive_path, &minecraft_dir) {
-        super::cleanup_failed_import(manager, &name);
-        return Err(error);
-    }
+    extract_mmc_archive(&summary.archive_path, &minecraft_dir)?;
 
-    progress::clear();
     tracing::info!(
         "Imported MultiMC/Prism pack '{}' as '{}'",
         summary.name,
-        name
+        config.name
     );
-    Ok(config)
+    Ok(())
 }
 
 // extracts everything under .minecraft/ from the archive into the instance dir

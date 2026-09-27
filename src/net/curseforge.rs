@@ -8,8 +8,8 @@ use serde::Deserialize;
 
 use crate::instance::{ContentKind, ModLoader};
 use crate::net::modrinth::{
-    DependencyType, DiscoveryProject, DiscoveryResults, ProjectInfo, VersionDependency,
-    VersionFile, VersionInfo, VersionType, url_encode,
+    DependencyType, DiscoveryMetadata, DiscoveryProject, DiscoveryResults, ProjectInfo,
+    VersionDependency, VersionFile, VersionInfo, VersionType, url_encode,
 };
 use crate::net::{HttpClient, NetError};
 
@@ -52,6 +52,8 @@ struct Mod {
     summary: String,
     #[serde(default)]
     download_count: u64,
+    #[serde(default)]
+    date_modified: String,
     allow_mod_distribution: Option<bool>,
     logo: Option<Logo>,
     #[serde(default)]
@@ -62,6 +64,102 @@ struct Mod {
 struct Category {
     name: String,
     slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchCategory {
+    id: u32,
+    slug: String,
+    name: String,
+    class_id: Option<u32>,
+}
+
+static SEARCH_CATEGORIES: tokio::sync::OnceCell<Vec<SearchCategory>> =
+    tokio::sync::OnceCell::const_new();
+
+fn category_id(categories: &[SearchCategory], class_id: u32, slug: &str) -> Option<u32> {
+    categories
+        .iter()
+        .find(|category| category.class_id == Some(class_id) && category.slug == slug)
+        .map(|category| category.id)
+}
+
+async fn search_category_id(
+    client: &HttpClient,
+    api_key: &str,
+    class_id: u32,
+    slug: &str,
+) -> Result<Option<u32>, NetError> {
+    let categories = load_search_categories(client, api_key).await?;
+    Ok(category_id(categories, class_id, slug))
+}
+
+async fn load_search_categories(
+    client: &HttpClient,
+    api_key: &str,
+) -> Result<&'static Vec<SearchCategory>, NetError> {
+    SEARCH_CATEGORIES
+        .get_or_try_init(|| async {
+            let response: ApiResponse<Vec<SearchCategory>> = get(
+                client,
+                api_key,
+                &format!("{API_BASE}/categories?gameId={MINECRAFT_GAME_ID}"),
+            )
+            .await?;
+            crate::feedback::request_redraw();
+            Ok::<_, NetError>(response.data)
+        })
+        .await
+}
+
+pub(crate) async fn ensure_discovery_categories(client: &HttpClient) -> Result<(), NetError> {
+    if let Some(api_key) = api_key() {
+        load_search_categories(client, api_key).await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn discovery_categories(class_id: u32) -> Vec<(&'static str, &'static str)> {
+    let mut categories = SEARCH_CATEGORIES
+        .get()
+        .into_iter()
+        .flatten()
+        .filter(|category| category.class_id == Some(class_id))
+        .map(|category| (category.slug.as_str(), category.name.as_str()))
+        .collect::<Vec<_>>();
+    categories.sort_by(|a, b| a.1.cmp(b.1));
+    categories
+}
+
+#[cfg(test)]
+pub(crate) fn seed_discovery_categories_for_test() {
+    let categories = [
+        (MODS_CLASS_ID, "library-api", "API and Library"),
+        (MODS_CLASS_ID, "performance", "Performance"),
+        (MODS_CLASS_ID, "magic", "Magic"),
+        (MODS_CLASS_ID, "create", "Create"),
+        (MODPACKS_CLASS_ID, "tech", "Tech"),
+        (DATA_PACKS_CLASS_ID, "magic", "Magic"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(id, (class_id, slug, name))| SearchCategory {
+        id: id as u32,
+        class_id: Some(class_id),
+        slug: slug.to_owned(),
+        name: name.to_owned(),
+    })
+    .collect();
+    let _ = SEARCH_CATEGORIES.set(categories);
+}
+
+pub(crate) fn discovery_class_id(kind: ContentKind, modpacks: bool) -> u32 {
+    if modpacks {
+        MODPACKS_CLASS_ID
+    } else {
+        class_id(kind)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,8 +278,11 @@ pub async fn search_discovery(
     api_key: &str,
     kind: ContentKind,
     query: &str,
-    game_version: &str,
+    game_versions: &[String],
     loader: ModLoader,
+    included_categories: &[String],
+    sort: crate::instance::content::provider::DiscoverySort,
+    reversed: bool,
     offset: usize,
     limit: usize,
 ) -> Result<DiscoveryResults, NetError> {
@@ -190,18 +291,26 @@ pub async fn search_discovery(
         api_key,
         class_id(kind),
         query,
-        game_version,
+        game_versions,
         (kind == ContentKind::Mod).then_some(loader),
+        included_categories,
+        sort,
+        reversed,
         offset,
         limit,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn search_modpacks(
     client: &HttpClient,
     api_key: &str,
     query: &str,
+    game_versions: &[String],
+    included_categories: &[String],
+    sort: crate::instance::content::provider::DiscoverySort,
+    reversed: bool,
     offset: usize,
     limit: usize,
 ) -> Result<DiscoveryResults, NetError> {
@@ -210,8 +319,11 @@ pub async fn search_modpacks(
         api_key,
         MODPACKS_CLASS_ID,
         query,
-        "",
+        game_versions,
         None,
+        included_categories,
+        sort,
+        reversed,
         offset,
         limit,
     )
@@ -224,12 +336,32 @@ async fn search(
     api_key: &str,
     class_id: u32,
     query: &str,
-    game_version: &str,
+    game_versions: &[String],
     loader: Option<ModLoader>,
+    included_categories: &[String],
+    sort: crate::instance::content::provider::DiscoverySort,
+    reversed: bool,
     offset: usize,
     limit: usize,
 ) -> Result<DiscoveryResults, NetError> {
+    if let Err(error) = load_search_categories(client, api_key).await {
+        tracing::warn!("CurseForge categories unavailable: {error}");
+    }
     let loader = loader.and_then(loader_type);
+    // Multiple selected categories use OR; leave them local until categoryIds semantics are confirmed.
+    let category = if let [slug] = included_categories {
+        match search_category_id(client, api_key, class_id, slug).await {
+            Ok(category) => category,
+            Err(error) => {
+                tracing::warn!(
+                    "CurseForge category lookup failed; filtering search page locally: {error}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut projects = Vec::new();
     let mut received = 0;
     let mut total_hits = 0;
@@ -240,17 +372,18 @@ async fn search(
             format!("classId={class_id}"),
             format!("index={}", offset + received),
             format!("pageSize={page_size}"),
-            "sortField=6".to_owned(),
-            "sortOrder=desc".to_owned(),
+            format!("sortField={}", curseforge_sort_field(sort, query)),
+            format!("sortOrder={}", if reversed { "asc" } else { "desc" }),
         ];
         if !query.trim().is_empty() {
             params.push(format!("searchFilter={}", url_encode(query.trim())));
         }
-        if !game_version.is_empty() {
-            params.push(format!("gameVersion={}", url_encode(game_version)));
-        }
+        params.extend(search_version_params(game_versions));
         if let Some(loader) = loader {
             params.push(format!("modLoaderType={loader}"));
+        }
+        if let Some(category) = category {
+            params.push(format!("categoryId={category}"));
         }
         let response: ApiResponse<Vec<Mod>> = get(
             client,
@@ -266,11 +399,51 @@ async fn search(
             break;
         }
     }
+    let mut metadata = std::collections::HashMap::new();
+    for project in &projects {
+        metadata.insert(
+            project.id.to_string(),
+            DiscoveryMetadata {
+                categories: project
+                    .categories
+                    .iter()
+                    .map(|category| category.slug.clone())
+                    .collect(),
+                ..DiscoveryMetadata::default()
+            },
+        );
+    }
     Ok(DiscoveryResults {
         received,
         total_hits,
+        metadata,
         projects: projects.into_iter().filter_map(discovery_project).collect(),
     })
+}
+
+fn search_version_params(game_versions: &[String]) -> Vec<String> {
+    match game_versions {
+        [] => Vec::new(),
+        [version] => vec![format!("gameVersion={}", url_encode(version))],
+        versions => vec![format!(
+            "gameVersions={}",
+            url_encode(&serde_json::to_string(versions).expect("versions serialize"))
+        )],
+    }
+}
+
+fn curseforge_sort_field(
+    sort: crate::instance::content::provider::DiscoverySort,
+    query: &str,
+) -> u8 {
+    use crate::instance::content::provider::DiscoverySort;
+    match sort {
+        DiscoverySort::Relevance if !query.is_empty() => 2,
+        DiscoverySort::Relevance | DiscoverySort::Downloads => 6,
+        DiscoverySort::Popular => 2,
+        DiscoverySort::Updated => 3,
+        DiscoverySort::Newest | DiscoverySort::Released => 11,
+    }
 }
 
 fn discovery_project(project: Mod) -> Option<DiscoveryProject> {
@@ -343,6 +516,9 @@ fn project_info(project: Mod, body: String) -> ProjectInfo {
         }
         .to_owned(),
         loaders: Vec::new(),
+        date_modified: project.date_modified,
+        client_side: String::new(),
+        server_side: String::new(),
     }
 }
 

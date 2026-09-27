@@ -62,6 +62,21 @@ fn delete_missing_instance_returns_not_found() {
     assert!(matches!(result, Err(InstanceError::NotFound(_))));
 }
 
+#[tokio::test]
+async fn create_preserves_directory_without_instance_config() {
+    let (manager, tmp) = test_manager();
+    let dir = tmp.path().join("existing");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("world.zip"), b"keep").unwrap();
+
+    let result = manager
+        .create("existing", "1.20.1", ModLoader::Vanilla, None)
+        .await;
+
+    assert!(matches!(result, Err(InstanceError::AlreadyExists(_))));
+    assert_eq!(std::fs::read(dir.join("world.zip")).unwrap(), b"keep");
+}
+
 #[test]
 fn delete_rejects_path_traversal() {
     let tmp = tempfile::tempdir().unwrap();

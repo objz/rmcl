@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Constantin Bauer
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use std::path::{Path, PathBuf};
 
 use super::harness::UiHarness;
@@ -32,6 +34,85 @@ fn remote_project_links_use_http_urls_and_encode_shell_metacharacters() {
     ] {
         assert!(crate::tui::input::project_link_url(link).is_err(), "{link}");
     }
+}
+
+#[test]
+fn ctrl_arrows_navigate_adjacent_panels_without_changing_content_tabs() {
+    let mut ui = UiHarness::new();
+    let panels = [
+        FocusedArea::Instances,
+        FocusedArea::Content,
+        FocusedArea::Account,
+        FocusedArea::Settings,
+        FocusedArea::Overview,
+    ];
+    let directions = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
+    let destinations = [
+        [panels[0], panels[0], panels[0], panels[1]],
+        [panels[1], panels[2], panels[0], panels[1]],
+        [panels[1], panels[2], panels[0], panels[3]],
+        [panels[1], panels[3], panels[2], panels[4]],
+        [panels[1], panels[4], panels[3], panels[4]],
+    ];
+    for (panel, expected) in panels.into_iter().zip(destinations) {
+        for (direction, destination) in directions.into_iter().zip(expected) {
+            for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
+                ui.app.focused = panel;
+                assert!(ui.key_event(KeyEvent::new_with_kind(
+                    direction,
+                    KeyModifiers::CONTROL,
+                    kind,
+                )));
+                assert_eq!(ui.app.focused, destination, "{panel:?} {direction:?}");
+                assert_eq!(ui.app.content_tab, ContentTab::Mods);
+            }
+        }
+    }
+
+    ui.app.focused = FocusedArea::Content;
+    for mode in [ContentMode::Installed, ContentMode::Discover] {
+        ui.app.content_mode = mode;
+        ui.key(KeyCode::Right);
+        assert_eq!(ui.app.content_tab, ContentTab::ResourcePacks);
+        ui.key(KeyCode::Left);
+        assert_eq!(ui.app.content_tab, ContentTab::Mods);
+        assert_eq!(ui.app.focused, FocusedArea::Content);
+    }
+}
+
+#[test]
+fn ctrl_arrows_do_not_escape_modal_input() {
+    let mut ui = UiHarness::new();
+    for panel in [FocusedArea::ConfirmDelete, FocusedArea::OverviewExpanded] {
+        ui.app.focused = panel;
+        ui.key_with(KeyCode::Down, KeyModifiers::CONTROL);
+        assert_eq!(ui.app.focused, panel);
+    }
+
+    ui.app.focused = FocusedArea::Instances;
+    ui.key(KeyCode::Char('a'));
+    ui.key_with(KeyCode::Down, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::Popup);
+    ui.key(KeyCode::Esc);
+    ui.key(KeyCode::Char('m'));
+    ui.key_with(KeyCode::Down, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::ImportPopup);
+    ui.key(KeyCode::Esc);
+
+    ui.app.focused = FocusedArea::Account;
+    ui.key(KeyCode::Char('a'));
+    ui.key_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::Account);
+
+    ui.app.focused = FocusedArea::Settings;
+    ui.key(KeyCode::Char('a'));
+    ui.key_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::Settings);
+
+    ui.app.focused = FocusedArea::Instances;
+    ui.app.instances_state.renaming = Some("Renaming".to_owned());
+    ui.key_with(KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::Instances);
 }
 
 #[test]
@@ -169,6 +250,10 @@ fn installed_popup_navigation_preserves_local_filters() {
     ui.draw();
     assert!(ui.app.mods_discovery_state.local_mode);
     let filters_before = ui.app.mods_discovery_state.filters.clone();
+
+    ui.key_with(KeyCode::Left, KeyModifiers::CONTROL);
+    assert_eq!(ui.app.focused, FocusedArea::Content);
+    assert!(ui.app.mods_discovery_state.version_popup.is_some());
 
     // Navigating the popup versions must not flip the state into discovery
     // mode (which used to swap the filters and refresh the background list).

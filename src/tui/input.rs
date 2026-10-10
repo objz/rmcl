@@ -522,6 +522,48 @@ impl App {
             }
         }
 
+        if key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(
+                key_event.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+            )
+            && match self.focused {
+                FocusedArea::Instances => self.instances_state.renaming.is_none(),
+                FocusedArea::Content => !self.active_discovery_state().is_some_and(|state| {
+                    state.version_popup.is_some() || state.project_page_open()
+                }),
+                FocusedArea::Account => {
+                    matches!(self.account_state.add_mode, widgets::account::AddMode::None)
+                }
+                FocusedArea::Settings => {
+                    matches!(
+                        self.settings_state.add_mode,
+                        widgets::settings::AddMode::None
+                    )
+                }
+                FocusedArea::Overview => true,
+                _ => false,
+            }
+        {
+            self.focused =
+                match (self.focused, key_event.code) {
+                    (FocusedArea::Instances, KeyCode::Right) => FocusedArea::Content,
+                    (FocusedArea::Content, KeyCode::Left)
+                    | (FocusedArea::Account, KeyCode::Left) => FocusedArea::Instances,
+                    (FocusedArea::Content, KeyCode::Down)
+                    | (FocusedArea::Settings, KeyCode::Left) => FocusedArea::Account,
+                    (FocusedArea::Account, KeyCode::Right)
+                    | (FocusedArea::Overview, KeyCode::Left) => FocusedArea::Settings,
+                    (FocusedArea::Settings, KeyCode::Right) => FocusedArea::Overview,
+                    (
+                        FocusedArea::Account | FocusedArea::Settings | FocusedArea::Overview,
+                        KeyCode::Up,
+                    ) => FocusedArea::Content,
+                    (focused, _) => focused,
+                };
+            return Ok(());
+        }
+
         if self.focused == FocusedArea::Content
             && self.content_mode == widgets::content::ContentMode::Installed
             && let Some(state) = self.active_discovery_state_mut()

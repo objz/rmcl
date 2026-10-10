@@ -763,6 +763,19 @@ impl App {
         if text_input_active {
             return repeatable_text_key(key);
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && matches!(
+                self.focused,
+                FocusedArea::Instances
+                    | FocusedArea::Content
+                    | FocusedArea::Account
+                    | FocusedArea::Settings
+                    | FocusedArea::Overview
+            )
+        {
+            return true;
+        }
         if vertical_navigation {
             return true;
         }

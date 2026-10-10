@@ -47,6 +47,12 @@ Browse Modrinth and CurseForge modpacks or import Modrinth, CurseForge, and Mult
 
 ---
 
+## navigation
+
+Use `Ctrl` + arrow keys to move between the Instances, Content, Accounts,
+Settings, and Overview panels. In Content, use plain `Left` / `Right` or `h` / `l`
+to switch tabs, and `Tab` to switch between installed content and discovery.
+
 ## authentication
 
 rmcl uses its own Microsoft client ID for Minecraft account authentication.

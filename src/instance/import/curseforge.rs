@@ -3,49 +3,55 @@
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::feedback::progress;
 use crate::instance::{InstanceConfig, InstanceManager, ModLoader};
 
 use super::{ImportSummary, PackFormat};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Manifest {
-    name: String,
-    version: String,
-    minecraft: Minecraft,
+pub(crate) struct Manifest {
+    pub name: String,
+    pub version: String,
+    pub minecraft: Minecraft,
     #[serde(default)]
-    files: Vec<ManifestFile>,
+    pub author: String,
+    #[serde(default)]
+    pub manifest_type: String,
+    #[serde(default)]
+    pub manifest_version: u32,
+    #[serde(default)]
+    pub files: Vec<ManifestFile>,
     #[serde(default = "default_overrides")]
-    overrides: String,
+    pub overrides: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Minecraft {
-    version: String,
+pub(crate) struct Minecraft {
+    pub version: String,
     #[serde(default)]
-    mod_loaders: Vec<ManifestLoader>,
+    pub mod_loaders: Vec<ManifestLoader>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ManifestLoader {
-    id: String,
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct ManifestLoader {
+    pub id: String,
     #[serde(default)]
-    primary: bool,
+    pub primary: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ManifestFile {
+pub(crate) struct ManifestFile {
     #[serde(rename = "projectID")]
-    _project_id: u64,
+    pub project_id: u64,
     #[serde(rename = "fileID")]
-    file_id: u64,
+    pub file_id: u64,
     #[serde(default = "required_by_default")]
-    required: bool,
+    pub required: bool,
 }
 
 fn default_overrides() -> String {

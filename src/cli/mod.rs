@@ -3,6 +3,7 @@
 
 mod account;
 mod content;
+mod export;
 mod import;
 mod instance;
 mod log;
@@ -78,6 +79,7 @@ pub async fn init() {
         Some(("log", sub_matches)) => log::handle_log(sub_matches).await,
         Some(("version", sub_matches)) => version::handle_version(sub_matches).await,
         Some(("import", sub_matches)) => import::handle_import(sub_matches).await,
+        Some(("export", sub_matches)) => export::handle_export(sub_matches).await,
         _ => Ok(()),
     };
 
@@ -164,6 +166,7 @@ fn build_command() -> Command {
                 ),
         )
         .subcommand(build_content_command("mod", "mods"))
+        .subcommand(export::command())
         .subcommand(build_content_command("pack", "resource packs"))
         .subcommand(build_content_command("shader", "shaders"))
         .subcommand(

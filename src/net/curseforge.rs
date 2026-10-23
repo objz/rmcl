@@ -228,8 +228,15 @@ struct FingerprintResponse {
 
 #[derive(Debug, Deserialize)]
 struct FingerprintMatch {
-    id: u32,
-    file: File,
+    file: FingerprintFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FingerprintFile {
+    file_fingerprint: u32,
+    #[serde(flatten)]
+    metadata: File,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -598,13 +605,45 @@ pub async fn resolve_fingerprints(
     api_key: &str,
     fingerprints: &[u32],
 ) -> Result<Vec<(u32, String, String)>, NetError> {
+    resolve_fingerprints_from(client, api_key, API_BASE, fingerprints).await
+}
+
+async fn resolve_fingerprints_from(
+    client: &HttpClient,
+    api_key: &str,
+    api_base: &str,
+    fingerprints: &[u32],
+) -> Result<Vec<(u32, String, String)>, NetError> {
+    Ok(
+        resolve_fingerprint_versions_from(client, api_key, api_base, fingerprints)
+            .await?
+            .into_iter()
+            .map(|(fingerprint, version)| (fingerprint, version.project_id, version.id))
+            .collect(),
+    )
+}
+
+pub(crate) async fn resolve_fingerprint_versions(
+    client: &HttpClient,
+    api_key: &str,
+    fingerprints: &[u32],
+) -> Result<Vec<(u32, VersionInfo)>, NetError> {
+    resolve_fingerprint_versions_from(client, api_key, API_BASE, fingerprints).await
+}
+
+async fn resolve_fingerprint_versions_from(
+    client: &HttpClient,
+    api_key: &str,
+    api_base: &str,
+    fingerprints: &[u32],
+) -> Result<Vec<(u32, VersionInfo)>, NetError> {
     if fingerprints.is_empty() {
         return Ok(Vec::new());
     }
     let response: ApiResponse<FingerprintResponse> = post(
         client,
         api_key,
-        &format!("{API_BASE}/fingerprints/{MINECRAFT_GAME_ID}"),
+        &format!("{api_base}/fingerprints/{MINECRAFT_GAME_ID}"),
         &FingerprintRequest { fingerprints },
     )
     .await?;
@@ -614,9 +653,8 @@ pub async fn resolve_fingerprints(
         .into_iter()
         .map(|matched| {
             (
-                matched.id,
-                matched.file.mod_id.to_string(),
-                matched.file.id.to_string(),
+                matched.file.file_fingerprint,
+                version_info(matched.file.metadata),
             )
         })
         .collect())

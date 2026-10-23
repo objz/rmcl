@@ -4,6 +4,7 @@
 pub mod config_sync;
 pub mod content;
 pub mod desktop;
+pub mod export;
 pub(crate) mod glfw;
 pub mod import;
 pub mod java;

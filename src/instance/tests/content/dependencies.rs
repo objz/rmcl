@@ -1400,9 +1400,10 @@ async fn installed_incompatible_projects_block_the_plan() {
 #[tokio::test]
 async fn dependency_install_commits_files_and_manifest_together() {
     let temp = tempfile::tempdir().unwrap();
-    let minecraft = temp.path().join("minecraft");
+    let paths = crate::storage::InstancePaths::new(temp.path().join("Instance"));
+    let minecraft = paths.minecraft();
     let mods = minecraft.join("mods");
-    let manifest_path = temp.path().join("manifest.json");
+    let manifest_path = paths.content_manifest();
     let root_version = version(
         "root",
         "root",
@@ -1428,11 +1429,19 @@ async fn dependency_install_commits_files_and_manifest_together() {
     .await
     .unwrap();
 
+    let mut running = crate::instance::runtime::lock_instance(temp.path(), "Instance").unwrap();
+    assert!(
+        install(&registry, &manifest_path, &minecraft, &plan)
+            .await
+            .is_err()
+    );
+    running.allow_content_changes().unwrap();
     let installed = install(&registry, &manifest_path, &minecraft, &plan)
         .await
         .unwrap();
 
     assert_eq!(installed.root_path, mods.join("root.jar"));
+    assert!(crate::instance::runtime::lock_instance(temp.path(), "Instance").is_err());
     assert!(mods.join("library.jar").exists());
     let manifest = ContentManifest::load(&manifest_path).unwrap();
     assert_eq!(manifest.files.len(), 2);

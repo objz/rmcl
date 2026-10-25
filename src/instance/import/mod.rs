@@ -14,12 +14,7 @@ use archive::{override_files, read_pack_manifest};
 use crate::instance::manager::InstanceManager;
 use crate::instance::models::ModLoader;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackFormat {
-    CurseForge,
-    Mrpack,
-    Mmc,
-}
+pub use super::pack::PackFormat;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImportInput {

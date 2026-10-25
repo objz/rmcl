@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::feedback::progress;
 use crate::instance::content::manifest::{
@@ -16,7 +16,7 @@ use crate::storage::InstancePaths;
 
 use super::{ImportSummary, PackFormat};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MrpackIndex {
     #[serde(rename = "formatVersion")]
     pub format_version: u32,
@@ -30,7 +30,7 @@ pub struct MrpackIndex {
     pub files: Vec<MrpackFile>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MrpackFile {
     pub path: String,
     #[serde(default)]

@@ -117,6 +117,36 @@ fn curseforge_file_maps_to_shared_version() {
     assert_eq!(version.files[0].hashes["sha1"], "abc");
 }
 
+#[tokio::test]
+async fn fingerprint_resolution_uses_file_fingerprint_and_keeps_exact_hashes() {
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fingerprints/432"))
+        .and(header("x-api-key", "test-key"))
+        .and(body_json(serde_json::json!({"fingerprints": [12345]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"exactMatches": [{"id": 7, "file": {
+                "id": 9, "modId": 7, "displayName": "Example", "fileName": "example.jar",
+                "fileFingerprint": 12345, "hashes": [{"algo": 1, "value": "abc"}]
+            }}]}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let resolved =
+        resolve_fingerprint_versions_from(&HttpClient::new(), "test-key", &server.uri(), &[12345])
+            .await
+            .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].0, 12345);
+    assert_eq!(resolved[0].1.project_id, "7");
+    assert_eq!(resolved[0].1.id, "9");
+    assert_eq!(resolved[0].1.files[0].hashes["sha1"], "abc");
+}
+
 #[test]
 fn curseforge_library_category_maps_to_cleanup_metadata() {
     let project: Mod = serde_json::from_str(

@@ -111,14 +111,29 @@ pub fn cleanup_kill_sender(name: &str) {
     }
 }
 
-pub(crate) struct InstanceLock(std::fs::File);
+pub(crate) struct InstanceLock {
+    file: std::fs::File,
+    content: Option<std::fs::File>,
+}
+
+impl InstanceLock {
+    pub(crate) fn allow_content_changes(&mut self) -> std::io::Result<()> {
+        if let Some(file) = &self.content {
+            file.unlock()?;
+        }
+        self.content = None;
+        Ok(())
+    }
+}
 
 impl Drop for InstanceLock {
     fn drop(&mut self) {
         // A concurrent fork can retain a descriptor until exec; closing our copy
         // alone would leave the instance locked during that interval.
-        if let Err(error) = self.0.unlock() {
-            tracing::warn!("Could not release instance lock: {error}");
+        for file in self.content.iter().chain(std::iter::once(&self.file)) {
+            if let Err(error) = file.unlock() {
+                tracing::warn!("Could not release instance lock: {error}");
+            }
         }
     }
 }
@@ -127,8 +142,35 @@ pub(crate) fn lock_instance(
     root: &std::path::Path,
     name: &str,
 ) -> Result<InstanceLock, crate::instance::manager::InstanceError> {
+    let mut guard = InstanceLock {
+        file: lock_file(root, name, false)?,
+        content: None,
+    };
+    guard.content = Some(lock_file(root, name, true)?);
+    Ok(guard)
+}
+
+pub(crate) fn lock_content(
+    root: &std::path::Path,
+    name: &str,
+) -> Result<InstanceLock, crate::instance::manager::InstanceError> {
+    Ok(InstanceLock {
+        file: lock_file(root, name, true)?,
+        content: None,
+    })
+}
+
+fn lock_file(
+    root: &std::path::Path,
+    name: &str,
+    content: bool,
+) -> Result<std::fs::File, crate::instance::manager::InstanceError> {
     crate::instance::manager::validate_name(name)?;
-    let locks = root.join(".rmcl-locks");
+    let locks = root.join(if content {
+        ".rmcl-locks/content"
+    } else {
+        ".rmcl-locks"
+    });
     std::fs::create_dir_all(&locks)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -137,7 +179,7 @@ pub(crate) fn lock_instance(
         .write(true)
         .open(locks.join(format!("{name}.lock")))?;
     match file.try_lock() {
-        Ok(()) => Ok(InstanceLock(file)),
+        Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(
             crate::instance::manager::InstanceError::InstanceRunning(name.to_owned()),
         ),

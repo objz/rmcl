@@ -212,8 +212,11 @@ fn instance_lock_child() {
     let Some(root) = std::env::var_os("RMCL_INSTANCE_LOCK_TEST") else {
         return;
     };
-    let _lock =
+    let mut lock =
         crate::instance::runtime::lock_instance(std::path::Path::new(&root), "locked").unwrap();
+    if std::env::var("RMCL_ALLOW_CONTENT_TEST").as_deref() == Ok("1") {
+        lock.allow_content_changes().unwrap();
+    }
     println!("LOCKED");
     std::io::stdout().flush().unwrap();
     std::thread::sleep(std::time::Duration::from_secs(10));
@@ -232,6 +235,7 @@ fn another_process_protects_the_instance_from_mutation_and_duplicate_launch() {
             "--nocapture",
         ])
         .env("RMCL_INSTANCE_LOCK_TEST", temp.path())
+        .env("RMCL_ALLOW_CONTENT_TEST", "1")
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -241,9 +245,12 @@ fn another_process_protects_the_instance_from_mutation_and_duplicate_launch() {
     let deletion = manager.delete("locked");
     let rename = manager.rename("locked", "new");
     let launch = crate::instance::runtime::lock_instance(&manager.instances_dir, "locked");
+    let content_allowed =
+        crate::instance::runtime::lock_content(&manager.instances_dir, "locked").is_ok();
     let _ = child.kill();
     child.wait().unwrap();
     assert!(ready);
+    assert!(content_allowed);
     assert!(matches!(deletion, Err(InstanceError::InstanceRunning(_))));
     assert!(matches!(rename, Err(InstanceError::InstanceRunning(_))));
     assert!(matches!(launch, Err(InstanceError::InstanceRunning(_))));

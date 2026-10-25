@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::super::LoadState;
-use super::super::base::PopupFrame;
+use super::super::base::{PopupFrame, summary_heading, summary_row};
 use super::state::{DISCOVERY_STATE, IMPORT_STATE, ImportStep, ImportWizardState};
 use crate::config::theme::{BORDER_STYLE, THEME};
 use crate::tui::app::FocusedArea;
@@ -108,8 +108,17 @@ pub fn popup_rect(frame_area: Rect) -> Rect {
             frame_area.centered(w, Constraint::Length(h))
         }
         ImportStep::Confirm => {
-            let h = 8u16.min(frame_area.height.saturating_sub(4));
-            frame_area.centered(w, Constraint::Length(h))
+            let width = frame_area.width * 68 / 100;
+            let height = IMPORT_STATE
+                .lock()
+                .map(|state| {
+                    confirmation_summary(&state).line_count(width.saturating_sub(2)) as u16 + 2
+                })
+                .unwrap_or(13);
+            frame_area.centered(
+                Constraint::Length(width),
+                Constraint::Length(height.min(frame_area.height.saturating_sub(4))),
+            )
         }
     }
 }
@@ -276,18 +285,18 @@ fn render_version_step(state: &ImportWizardState, area: Rect, buf: &mut ratatui:
 }
 
 fn render_confirm_step(state: &ImportWizardState, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    confirmation_summary(state).render(area, buf);
+}
+
+fn confirmation_summary(state: &ImportWizardState) -> Paragraph<'static> {
     let theme = THEME.as_ref();
     let summary = match &state.summary {
         Some(s) => s,
         None => {
-            Paragraph::new("No summary available")
-                .style(Style::default().fg(theme.text_dim()))
-                .render(area, buf);
-            return;
+            return Paragraph::new("No summary available")
+                .style(Style::default().fg(theme.text_dim()));
         }
     };
-
-    let label_style = Style::default().fg(theme.text_dim());
 
     let loader_display = if let Some(ref lv) = summary.loader_version {
         format!("{} {}", summary.loader, lv)
@@ -296,34 +305,20 @@ fn render_confirm_step(state: &ImportWizardState, area: Rect, buf: &mut ratatui:
     };
 
     Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("Name: ", label_style),
-            Span::raw(summary.name.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("Pack Version: ", label_style),
-            Span::raw(summary.pack_version.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("MC Version: ", label_style),
-            Span::raw(summary.game_version.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("Loader: ", label_style),
-            Span::raw(loader_display),
-        ]),
-        Line::from(vec![
-            Span::styled("Mods: ", label_style),
-            Span::raw(format!("{} files", summary.mod_count)),
-        ]),
-        Line::from(vec![
-            Span::styled("Overrides: ", label_style),
-            Span::raw(format!("{} files", summary.override_count)),
-        ]),
+        summary_heading("Pack"),
+        summary_row("Pack name", summary.name.clone()),
+        summary_row("Pack version", summary.pack_version.clone()),
+        Line::default(),
+        summary_heading("Runtime"),
+        summary_row("Minecraft", summary.game_version.clone()),
+        summary_row("Loader", loader_display),
+        Line::default(),
+        summary_heading("Files"),
+        summary_row("Mods", format!("{} files", summary.mod_count)),
+        summary_row("Overrides", format!("{} files", summary.override_count)),
     ])
     .style(Style::default().fg(theme.text()))
-    .wrap(Wrap { trim: true })
-    .render(area, buf);
+    .wrap(Wrap { trim: false })
 }
 
 fn wizard_title(state: &ImportWizardState) -> Line<'static> {

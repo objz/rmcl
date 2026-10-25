@@ -118,7 +118,24 @@ fn update_conflicts_explain_why_the_item_was_not_updated() {
     );
     assert_eq!(
         state.list.entries[0].description,
-        "Other selected updates require different versions of Library.\nThis mod was left unchanged; update it separately with v."
+        "Other selected updates require different versions of Library"
     );
     assert!(state.list.warning_descriptions);
+}
+
+#[test]
+fn update_errors_only_show_the_cause() {
+    for (error, expected) in [
+        (
+            "Parse error: No compatible dependency version found for project 'library'",
+            "No compatible dependency version found for project 'library'",
+        ),
+        (
+            "Parse error: Conflicting required versions for 'Library': '1.0' and '2.0'",
+            "Incompatible required versions of Library",
+        ),
+        ("Provider unavailable", "Provider unavailable"),
+    ] {
+        assert_eq!(user_conflict_reason(error), expected);
+    }
 }

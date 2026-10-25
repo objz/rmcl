@@ -9,7 +9,7 @@ use super::state::{
 use crate::config::theme::THEME;
 use crate::instance::models::ModLoader;
 use crate::tui::app::FocusedArea;
-use crate::tui::widgets::popups::base::{PopupFrame, render_summary};
+use crate::tui::widgets::popups::base::{PopupFrame, summary_heading, summary_row};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -107,8 +107,17 @@ pub fn popup_rect(frame_area: Rect) -> Rect {
             frame_area.centered(w, Constraint::Length(h))
         }
         WizardStep::Confirm => {
-            let h = 6u16.min(frame_area.height.saturating_sub(4));
-            frame_area.centered(w, Constraint::Length(h))
+            let width = frame_area.width * 68 / 100;
+            let height = WIZARD_STATE
+                .lock()
+                .map(|state| {
+                    confirmation_summary(&state).line_count(width.saturating_sub(2)) as u16 + 2
+                })
+                .unwrap_or(9);
+            frame_area.centered(
+                Constraint::Length(width),
+                Constraint::Length(height.min(frame_area.height.saturating_sub(4))),
+            )
         }
     }
 }
@@ -249,6 +258,10 @@ fn render_loader_version_step(state: &WizardState, area: Rect, buf: &mut ratatui
 }
 
 fn render_confirm_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    confirmation_summary(state).render(area, buf);
+}
+
+fn confirmation_summary(state: &WizardState) -> Paragraph<'static> {
     let game_version = state
         .selected_version()
         .map(|version| version.id.as_str())
@@ -262,16 +275,16 @@ fn render_confirm_step(state: &WizardState, area: Rect, buf: &mut ratatui::buffe
             .unwrap_or_else(|| "<not selected>".to_string())
     };
     let loader = loader.to_string();
-    render_summary(
-        &[
-            ("Name", state.name_state.value()),
-            ("MC", game_version),
-            ("Loader", &loader),
-            ("Loader version", &loader_version),
-        ],
-        area,
-        buf,
-    );
+    Paragraph::new(vec![
+        summary_heading("Instance"),
+        summary_row("Name", state.name_state.value().to_owned()),
+        Line::default(),
+        summary_heading("Runtime"),
+        summary_row("Minecraft", game_version.to_owned()),
+        summary_row("Loader", loader),
+        summary_row("Loader version", loader_version),
+    ])
+    .wrap(Wrap { trim: false })
 }
 
 #[cfg(test)]

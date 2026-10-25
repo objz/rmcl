@@ -17,3 +17,29 @@ fn parses_instance_list_subcommand() {
         "instance list should resolve to the list subcommand"
     );
 }
+
+#[test]
+fn exports_accept_each_format_and_preserve_curseforge_default() {
+    for format in [None, Some("curseforge"), Some("mrpack"), Some("mmc")] {
+        let mut args = vec!["rmcl", "export", "Example", "--output", "pack.zip"];
+        if let Some(format) = format {
+            args.extend(["--format", format]);
+        }
+        let matches = build_command().try_get_matches_from(args).unwrap();
+        assert_eq!(
+            matches
+                .subcommand_matches("export")
+                .unwrap()
+                .get_one::<String>("format")
+                .map(String::as_str),
+            Some(format.unwrap_or("curseforge"))
+        );
+    }
+    assert!(
+        build_command()
+            .try_get_matches_from([
+                "rmcl", "export", "Example", "--output", "pack.zip", "--format", "unknown"
+            ])
+            .is_err()
+    );
+}

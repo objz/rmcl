@@ -41,6 +41,7 @@ pub struct App {
     pub(super) account_state: widgets::account::AccountState,
     pub(super) settings_state: widgets::settings::SettingsState,
     pub(super) instance_settings: Option<widgets::popups::instance_settings::State>,
+    pub(super) export_popup: Option<widgets::popups::export_modpack::State>,
     pub(super) pending_instance_settings_updates: HashSet<String>,
     pub(super) global_settings: Option<widgets::popups::global_settings::State>,
     pub(super) picker: ratatui_image::picker::Picker,
@@ -229,6 +230,7 @@ impl App {
             account_state: widgets::account::AccountState::default(),
             settings_state,
             instance_settings: None,
+            export_popup: None,
             pending_instance_settings_updates: HashSet::new(),
             global_settings: None,
             screenshots_state: {

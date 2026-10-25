@@ -7,7 +7,7 @@ use super::*;
 fn dropping_an_instance_lock_releases_it_even_with_a_duplicated_descriptor() {
     let temp = tempfile::tempdir().unwrap();
     let lock = lock_instance(temp.path(), "duplicated").unwrap();
-    let duplicate = lock.0.try_clone().unwrap();
+    let duplicate = lock.file.try_clone().unwrap();
     drop(lock);
     let next = lock_instance(temp.path(), "duplicated");
     drop(duplicate);
@@ -15,6 +15,29 @@ fn dropping_an_instance_lock_releases_it_even_with_a_duplicated_descriptor() {
         next.is_ok(),
         "A duplicate descriptor retained the released instance lock"
     );
+}
+
+#[test]
+fn running_content_changes_remain_serialized() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut game = lock_instance(temp.path(), "game").unwrap();
+    assert!(lock_content(temp.path(), "game").is_err());
+    game.allow_content_changes().unwrap();
+    let content = lock_content(temp.path(), "game").unwrap();
+    assert!(lock_content(temp.path(), "game").is_err());
+    assert!(lock_instance(temp.path(), "game").is_err());
+    drop(content);
+    assert!(lock_content(temp.path(), "game").is_ok());
+    assert!(lock_instance(temp.path(), "game").is_err());
+    drop(game);
+    assert!(lock_instance(temp.path(), "game").is_ok());
+}
+
+#[test]
+fn content_locks_do_not_collide_with_other_instance_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let _game = lock_instance(temp.path(), "game").unwrap();
+    let _other = lock_instance(temp.path(), "game.content").unwrap();
 }
 
 #[test]

@@ -20,6 +20,17 @@ pub(crate) struct ContentLock {
 
 impl ContentLock {
     pub(crate) fn acquire(path: &Path) -> Result<Self, ManifestError> {
+        Self::acquire_with_instance_guard(path, false)
+    }
+
+    pub(crate) fn acquire_stopped(path: &Path) -> Result<Self, ManifestError> {
+        Self::acquire_with_instance_guard(path, true)
+    }
+
+    fn acquire_with_instance_guard(
+        path: &Path,
+        require_stopped: bool,
+    ) -> Result<Self, ManifestError> {
         let parent = path.parent().ok_or_else(|| {
             ManifestError::InvalidPath(format!("{} has no parent", path.display()))
         })?;
@@ -43,17 +54,37 @@ impl ContentLock {
                 .ok_or_else(|| {
                     ManifestError::InvalidPath(format!("{} has no instance name", path.display()))
                 })?;
-            Some(crate::instance::runtime::lock_instance(root, name).map_err(
-                |error| match error {
-                    crate::instance::manager::InstanceError::InstanceRunning(_) => {
-                        ManifestError::Busy(path.to_owned())
-                    }
-                    error => ManifestError::Io(std::io::Error::other(error)),
-                },
-            )?)
+            let lock = if require_stopped {
+                crate::instance::runtime::lock_instance(root, name)
+            } else {
+                crate::instance::runtime::lock_content(root, name)
+            };
+            Some(lock.map_err(|error| match error {
+                crate::instance::manager::InstanceError::InstanceRunning(_) => {
+                    ManifestError::Busy(path.to_owned())
+                }
+                error => ManifestError::Io(std::io::Error::other(error)),
+            })?)
         } else {
             None
         };
+        Self::acquire_file(path, instance_lock)
+    }
+
+    pub(crate) fn acquire_with_held_instance_lock(
+        path: &Path,
+        _guard: &crate::instance::runtime::InstanceLock,
+    ) -> Result<Self, ManifestError> {
+        Self::acquire_file(path, None)
+    }
+
+    fn acquire_file(
+        path: &Path,
+        instance_lock: Option<crate::instance::runtime::InstanceLock>,
+    ) -> Result<Self, ManifestError> {
+        let parent = path.parent().ok_or_else(|| {
+            ManifestError::InvalidPath(format!("{} has no parent", path.display()))
+        })?;
         std::fs::create_dir_all(parent)?;
         let file = OpenOptions::new()
             .read(true)
@@ -468,6 +499,14 @@ pub enum ManifestError {
 }
 
 pub fn fingerprint(path: &Path) -> Result<FileFingerprint, std::io::Error> {
+    fingerprint_with_check(path, || Ok(()))
+}
+
+pub(crate) fn fingerprint_with_check(
+    path: &Path,
+    check: impl Fn() -> std::io::Result<()>,
+) -> Result<FileFingerprint, std::io::Error> {
+    check()?;
     let metadata = std::fs::metadata(path)?;
     let modified_ns = metadata
         .modified()
@@ -481,6 +520,7 @@ pub fn fingerprint(path: &Path) -> Result<FileFingerprint, std::io::Error> {
     let mut curseforge_len = 0u32;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        check()?;
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -500,7 +540,7 @@ pub fn fingerprint(path: &Path) -> Result<FileFingerprint, std::io::Error> {
         ("sha512".to_owned(), format!("{:x}", sha512.finalize())),
         (
             "curseforge".to_owned(),
-            curseforge_fingerprint(&mut file, curseforge_len)?.to_string(),
+            curseforge_fingerprint(&mut file, curseforge_len, &check)?.to_string(),
         ),
     ]);
     Ok(FileFingerprint {
@@ -510,13 +550,18 @@ pub fn fingerprint(path: &Path) -> Result<FileFingerprint, std::io::Error> {
     })
 }
 
-fn curseforge_fingerprint(reader: &mut impl Read, length: u32) -> std::io::Result<u32> {
+fn curseforge_fingerprint(
+    reader: &mut impl Read,
+    length: u32,
+    check: &impl Fn() -> std::io::Result<()>,
+) -> std::io::Result<u32> {
     const M: u32 = 0x5bd1e995;
     let mut hash = 1 ^ length;
     let mut block = [0u8; 4];
     let mut block_len = 0;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        check()?;
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;

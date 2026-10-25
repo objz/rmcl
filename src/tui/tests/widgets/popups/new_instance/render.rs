@@ -122,7 +122,7 @@ fn new_instance_renders_confirm_step() {
         guard.name_state = TextState::new().with_value("MyPack");
     }
 
-    let backend = TestBackend::new(60, 12);
+    let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| render(f, f.area(), FocusedArea::Popup))
@@ -135,5 +135,5 @@ fn new_instance_confirmation_area_fits_its_summary() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_wizard_state(WizardStep::Confirm);
 
-    assert_eq!(popup_rect(Rect::new(0, 0, 100, 30)).height, 6);
+    assert_eq!(popup_rect(Rect::new(0, 0, 100, 30)).height, 9);
 }

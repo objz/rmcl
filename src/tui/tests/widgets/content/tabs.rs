@@ -54,16 +54,6 @@ fn discovery_version_rows_only_show_the_version_number() {
 }
 
 #[test]
-fn discovery_confirmation_popup_fits_its_summary() {
-    assert_eq!(
-        version_popup_height(false, None, false, false, false),
-        VERSION_POPUP_HEIGHT
-    );
-    assert_eq!(version_popup_height(true, None, false, false, false), 6);
-    assert_eq!(version_popup_height(true, None, false, true, false), 7);
-}
-
-#[test]
 fn install_summary_checks_selected_mod_release_not_picker_version() {
     use crate::instance::ContentKind;
     use crate::net::modrinth::{DiscoveryProject, VersionInfo, VersionType};
@@ -217,6 +207,11 @@ fn skipped_dependencies_render_as_skipped_in_confirmation() {
     let screen = format!("{}", terminal.backend());
     assert!(screen.contains("Also changes"));
     assert!(screen.contains("skip deps"));
+    assert!(screen.contains("Release"));
+    assert!(screen.contains("Runtime"));
+    assert!(screen.contains("Dependencies"));
+    assert!(screen.contains("Dependency -> 2.0"));
+    insta::assert_snapshot!("content_confirmation_sections", terminal.backend());
 
     state.version_popup.as_mut().unwrap().skip_dependencies = true;
     terminal

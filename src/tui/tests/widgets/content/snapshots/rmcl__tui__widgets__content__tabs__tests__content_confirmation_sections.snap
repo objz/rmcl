@@ -1,0 +1,28 @@
+---
+source: src/tui/tests/widgets/content/tabs.rs
+expression: terminal.backend()
+---
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                ╭Install Project───────────────────────────────────────── Modrinth ╮                "
+"                │  Release                                                         │                "
+"                │  Version           1.0                                           │                "
+"                │  Released          Unknown                                       │                "
+"                │                                                                  │                "
+"                │  Runtime                                                         │                "
+"                │  Minecraft         26.3                                          │                "
+"                │  Loader            Fabric                                        │                "
+"                │                                                                  │                "
+"                │  Dependencies                                                    │                "
+"                │  Also installs     Dependency                                    │                "
+"                │  Also changes      Dependency -> 2.0                             │                "
+"                ╰──────────────────────────[h] back  [s] skip deps  [Enter] install╯                "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "

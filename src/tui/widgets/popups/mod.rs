@@ -4,6 +4,7 @@
 pub mod base;
 pub mod confirm;
 pub mod error;
+pub mod export_modpack;
 pub mod global_settings;
 pub mod import_modpack;
 pub mod instance_settings;

@@ -22,6 +22,23 @@ fn content_lock_excludes_independent_handles_until_drop() {
 }
 
 #[test]
+fn content_lock_with_held_instance_guard_still_excludes_other_manifest_handles() {
+    let temp = tempfile::tempdir().unwrap();
+    let guard = crate::instance::runtime::lock_instance(temp.path(), "Example").unwrap();
+    let path = temp.path().join("Example/rmcl/content/manifest.json");
+    let lock = ContentLock::acquire_with_held_instance_lock(&path, &guard).unwrap();
+    assert!(matches!(
+        ContentLock::acquire_with_held_instance_lock(&path, &guard),
+        Err(ManifestError::Busy(_))
+    ));
+    drop(lock);
+    ContentLock::acquire_with_held_instance_lock(&path, &guard).unwrap();
+    assert!(ContentLock::acquire(&path).is_err());
+    drop(guard);
+    ContentLock::acquire(&path).unwrap();
+}
+
+#[test]
 fn dropping_guard_releases_the_content_lock_with_a_duplicated_handle() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("instance/rmcl/content/manifest.json");
@@ -189,6 +206,30 @@ fn fingerprint_contains_both_modrinth_hashes() {
         Some("a9993e364706816aba3e25717850c26c9cd0d89d")
     );
     assert_eq!(fingerprint.hash("sha512").unwrap().len(), 128);
+}
+
+#[test]
+fn fingerprint_checks_cancellation_during_both_hashing_passes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("example.jar");
+    std::fs::write(&path, [b'x'; 64 * 1024 + 1]).unwrap();
+    for cancel_at in [3, 6] {
+        let calls = std::cell::Cell::new(0);
+        let error = fingerprint_with_check(&path, || {
+            calls.set(calls.get() + 1);
+            if calls.get() == cancel_at {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(calls.get(), cancel_at);
+    }
 }
 
 #[test]

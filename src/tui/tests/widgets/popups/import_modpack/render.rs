@@ -160,7 +160,7 @@ fn import_modpack_renders_confirm_step() {
         });
     }
 
-    let backend = TestBackend::new(60, 14);
+    let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| render(f, f.area(), FocusedArea::ImportPopup))
@@ -173,7 +173,22 @@ fn modpack_confirmation_area_fits_its_summary() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_import_state(ImportStep::Confirm);
 
-    assert_eq!(popup_rect(Rect::new(0, 0, 100, 30)).height, 8);
+    {
+        let mut state = IMPORT_STATE.lock().unwrap();
+        state.summary = Some(crate::instance::import::ImportSummary {
+            name: "Pack".into(),
+            pack_version: "1.0".into(),
+            game_version: "1.21.1".into(),
+            loader: crate::instance::models::ModLoader::Vanilla,
+            loader_version: None,
+            mod_count: 1,
+            override_count: 2,
+            format: crate::instance::import::PackFormat::Mrpack,
+            archive_path: std::path::PathBuf::from("pack.mrpack"),
+            source: None,
+        });
+    }
+    assert_eq!(popup_rect(Rect::new(0, 0, 100, 30)).height, 13);
 }
 
 #[test]
@@ -201,7 +216,7 @@ fn import_modpack_renders_confirm_step_without_loader_version() {
         });
     }
 
-    let backend = TestBackend::new(60, 14);
+    let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| render(f, f.area(), FocusedArea::ImportPopup))

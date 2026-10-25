@@ -10,9 +10,10 @@ use ratatui::{
     layout::{Constraint, Flex, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+use super::base::{summary_heading, summary_row};
 use crate::config::theme::{BORDER_STYLE, THEME};
 use crate::instance::import::refresh::RefreshPlan;
 
@@ -113,10 +114,25 @@ pub fn render(frame: &mut Frame, state: &State) {
         .plan
         .as_ref()
         .map_or(1, |plan| plan.conflicts.len().max(5));
-    let [area] = Layout::vertical([Constraint::Length((count as u16 + 5).clamp(8, 20))])
-        .flex(Flex::Center)
-        .areas(frame.area());
-    let [area] = Layout::horizontal([Constraint::Percentage(62)])
+    let mut lines = state.plan.as_ref().map_or_else(Vec::new, |plan| {
+        review_lines(&plan.summary, &plan.current_version, &plan.target_version)
+    });
+    if let Some(error) = &state.error {
+        lines.push(Line::from(error.clone()).style(Style::default().fg(theme.error())));
+    }
+    let summary = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let width = frame.area().width * if state.phase == Phase::Review { 68 } else { 62 } / 100;
+    let height = if state.phase == Phase::Review {
+        summary.line_count(width.saturating_sub(2)) as u16 + 2
+    } else {
+        (count as u16 + 5).clamp(8, 20)
+    };
+    let [area] = Layout::vertical([Constraint::Length(
+        height.min(frame.area().height.saturating_sub(4)),
+    )])
+    .flex(Flex::Center)
+    .areas(frame.area());
+    let [area] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(area);
     frame.render_widget(Clear, area);
@@ -200,32 +216,40 @@ pub fn render(frame: &mut Frame, state: &State) {
             );
         }
         Phase::Review => {
-            let mut lines = state.plan.as_ref().map_or_else(Vec::new, |plan| {
-                vec![
-                    Line::from(vec![
-                        Span::styled(
-                            plan.summary.name.clone(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(format!(
-                            "  {} → {}",
-                            plan.current_version, plan.target_version
-                        )),
-                    ]),
-                    Line::from(format!("Minecraft: {}", plan.summary.game_version)),
-                    Line::from(format!(
-                        "Loader: {} {}",
-                        plan.summary.loader,
-                        plan.summary.loader_version.as_deref().unwrap_or("")
-                    )),
-                    Line::from(format!("Pack files: {}", plan.summary.mod_count)),
-                    Line::from(format!("Overrides: {}", plan.summary.override_count)),
-                ]
-            });
-            if let Some(error) = &state.error {
-                lines.push(Line::from(error.clone()).style(Style::default().fg(theme.error())));
-            }
-            frame.render_widget(Paragraph::new(lines).block(block), area);
+            frame.render_widget(summary.block(block), area);
         }
     }
 }
+
+fn review_lines(
+    summary: &crate::instance::import::ImportSummary,
+    current: &str,
+    target: &str,
+) -> Vec<Line<'static>> {
+    vec![
+        summary_heading("Pack"),
+        summary_row("Pack name", summary.name.clone()),
+        summary_row("Pack version", format!("{current} → {target}")),
+        Line::default(),
+        summary_heading("Runtime"),
+        summary_row("Minecraft", summary.game_version.clone()),
+        summary_row(
+            "Loader",
+            format!(
+                "{} {}",
+                summary.loader,
+                summary.loader_version.as_deref().unwrap_or("")
+            )
+            .trim_end()
+            .to_owned(),
+        ),
+        Line::default(),
+        summary_heading("Files"),
+        summary_row("Pack files", summary.mod_count.to_string()),
+        summary_row("Overrides", summary.override_count.to_string()),
+    ]
+}
+
+#[cfg(test)]
+#[path = "../../tests/widgets/popups/modpack_update.rs"]
+mod tests;

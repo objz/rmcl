@@ -202,6 +202,31 @@ fn content_mutations_coordinate_with_the_instance_lifetime_guard() {
 }
 
 #[test]
+fn running_instances_allow_content_toggles_and_removal_but_still_prevent_duplicate_launches() {
+    let temp = tempfile::tempdir().unwrap();
+    let (minecraft, manifest_path, record) = managed_mod(temp.path());
+    let path = minecraft.join(&record.relative_path);
+    let mut entry = super::super::mods::scan_one_mod(&path, "example", true);
+    entry.provider_project = record.resolved_project().cloned();
+    let mut running = crate::instance::runtime::lock_instance(temp.path(), "instance").unwrap();
+    assert!(
+        toggle(&entry).is_err(),
+        "Content must remain protected during launch preparation"
+    );
+    running.allow_content_changes().unwrap();
+    let disabled = toggle(&entry).unwrap().unwrap();
+    assert_eq!(std::fs::read(&disabled).unwrap(), b"original");
+    assert!(!path.exists());
+    let expected = ContentManifest::load(&manifest_path).unwrap().files;
+    let (manifest, _) = remove(&manifest_path, &minecraft, &disabled, &expected, true).unwrap();
+    assert!(manifest.files.is_empty());
+    assert!(!disabled.exists());
+    assert!(crate::instance::runtime::lock_instance(temp.path(), "instance").is_err());
+    drop(running);
+    crate::instance::runtime::lock_instance(temp.path(), "instance").unwrap();
+}
+
+#[test]
 fn stale_content_actions_reject_new_ownership_and_changed_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let (minecraft, manifest_path, record) = managed_mod(temp.path());
@@ -281,6 +306,25 @@ fn deleting_a_world_validates_and_removes_its_descendant_records() {
             .to_string()
             .contains("Ownership")
     );
+    let mut running = crate::instance::runtime::lock_instance(temp.path(), "instance").unwrap();
+    running.allow_content_changes().unwrap();
+    assert!(
+        remove(
+            &manifest_path,
+            &minecraft,
+            &world,
+            std::slice::from_ref(&record),
+            false
+        )
+        .is_err()
+    );
+    let entry = super::super::worlds::scan_one_world(&world, "world", true);
+    assert!(
+        toggle(&entry).is_err(),
+        "Renaming a live save must remain blocked"
+    );
+    assert!(world.exists(), "Deleting a live save must remain blocked");
+    drop(running);
     let (manifest, _) = remove(&manifest_path, &minecraft, &world, &[record], false).unwrap();
     assert!(manifest.files.is_empty());
     assert!(!world.exists());

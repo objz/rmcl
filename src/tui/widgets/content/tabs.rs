@@ -483,6 +483,7 @@ pub fn render(
             ("Esc", " kill"),
             ("a", " add"),
             ("m", " modpacks"),
+            ("e", " export"),
             ("u", " update"),
             ("d", " delete"),
             ("r", " rename"),
@@ -1406,19 +1407,6 @@ pub(crate) fn render_version_popup(
         .dependency_plan
         .as_ref()
         .is_some_and(|plan| plan.has_dependency_changes());
-    let popup_area = area.centered(
-        Constraint::Percentage(50),
-        Constraint::Length(
-            version_popup_height(
-                popup.confirming,
-                popup.dependency_plan.as_ref(),
-                popup.target_world.is_some(),
-                compatibility_warning.is_some(),
-                skip_dependencies && dependencies_changeable,
-            )
-            .min(area.height.saturating_sub(2)),
-        ),
-    );
     let theme = THEME.as_ref();
     let title = popup.title();
     let loading = popup.loading;
@@ -1474,6 +1462,59 @@ pub(crate) fn render_version_popup(
         .as_ref()
         .map(|plan| plan.optional_dependencies)
         .unwrap_or_default();
+    use crate::tui::widgets::popups::base::{summary_heading, summary_row};
+    let mut summary = vec![
+        summary_heading("Release"),
+        summary_row("Version", selected_version.clone()),
+        summary_row("Released", release_date),
+        Line::default(),
+        summary_heading("Runtime"),
+        summary_row("Minecraft", minecraft_versions),
+        summary_row("Loader", loaders),
+    ];
+    if let Some(world) = &target_world {
+        summary.push(summary_row("World", world.clone()));
+    }
+    if skip_dependencies && dependencies_changeable
+        || !dependency_installs.is_empty()
+        || !dependency_replacements.is_empty()
+        || optional_dependencies > 0
+    {
+        summary.extend([Line::default(), summary_heading("Dependencies")]);
+        if skip_dependencies && dependencies_changeable {
+            summary.push(summary_row("Required", "Skipped"));
+        } else {
+            if !dependency_installs.is_empty() {
+                summary.push(summary_row("Also installs", dependency_installs));
+            }
+            if !dependency_replacements.is_empty() {
+                summary.push(summary_row("Also changes", dependency_replacements));
+            }
+            if optional_dependencies > 0 {
+                summary.push(summary_row(
+                    "Optional skipped",
+                    optional_dependencies.to_string(),
+                ));
+            }
+        }
+    }
+    if let Some(warning) = compatibility_warning {
+        summary.extend([
+            Line::default(),
+            Line::styled(warning, Style::default().fg(theme.warning())),
+        ]);
+    }
+    let summary = Paragraph::new(summary).wrap(Wrap { trim: false });
+    let width = area.width * if confirming { 68 } else { 50 } / 100;
+    let height = if confirming {
+        summary.line_count(width.saturating_sub(2)) as u16 + 2
+    } else {
+        VERSION_POPUP_HEIGHT
+    };
+    let popup_area = area.centered(
+        Constraint::Length(width),
+        Constraint::Length(height.min(area.height.saturating_sub(2))),
+    );
     let can_switch_provider = popup.sources.len() > 1;
     let current_version_id = popup.current_version_id.clone();
     let items = if selecting_minecraft_version {
@@ -1574,44 +1615,7 @@ pub(crate) fn render_version_popup(
                     .wrap(Wrap { trim: true })
                     .render(area, buffer);
             } else if confirming {
-                let mut rows = vec![
-                    ("Version", selected_version.as_str()),
-                    ("Minecraft", minecraft_versions.as_str()),
-                    ("Loader", loaders.as_str()),
-                    ("Released", release_date.as_str()),
-                ];
-                if let Some(world) = target_world.as_deref() {
-                    rows.push(("World", world));
-                }
-                let optional_text;
-                if skip_dependencies && dependencies_changeable {
-                    rows.push(("Dependencies", "Skipped"));
-                } else {
-                    if !dependency_installs.is_empty() {
-                        rows.push(("Also installs", dependency_installs.as_str()));
-                    }
-                    if !dependency_replacements.is_empty() {
-                        rows.push(("Also changes", dependency_replacements.as_str()));
-                    }
-                    if optional_dependencies > 0 {
-                        optional_text = optional_dependencies.to_string();
-                        rows.push(("Optional not installed", optional_text.as_str()));
-                    }
-                }
-                crate::tui::widgets::popups::base::render_summary(&rows, area, buffer);
-                if let Some(warning) = compatibility_warning.as_deref() {
-                    let summary_height = rows.len() as u16;
-                    Paragraph::new(warning)
-                        .style(Style::default().fg(THEME.as_ref().warning()))
-                        .render(
-                            Rect {
-                                y: area.y.saturating_add(summary_height),
-                                height: area.height.saturating_sub(summary_height).min(1),
-                                ..area
-                            },
-                            buffer,
-                        );
-                }
+                summary.clone().render(area, buffer);
             } else if items.is_empty() {
                 Paragraph::new(if selecting_minecraft_version {
                     "No compatible Minecraft versions found."
@@ -1690,30 +1694,6 @@ fn world_picker_keybinds(has_worlds: bool) -> &'static [(&'static str, &'static 
     } else {
         &[("h", " back"), ("Esc", " close")]
     }
-}
-
-fn version_popup_height(
-    confirming: bool,
-    plan: Option<&crate::instance::content::dependencies::DependencyPlan>,
-    has_world: bool,
-    has_warning: bool,
-    skipped: bool,
-) -> u16 {
-    if !confirming {
-        return VERSION_POPUP_HEIGHT;
-    }
-    let Some(plan) = plan else {
-        return 6 + u16::from(has_world) + u16::from(has_warning);
-    };
-    6 + u16::from(has_world)
-        + u16::from(has_warning)
-        + if skipped {
-            1
-        } else {
-            u16::from(plan.dependency_installs().next().is_some())
-                + u16::from(plan.dependency_replacements().next().is_some())
-                + u16::from(plan.optional_dependencies > 0)
-        }
 }
 
 fn confirmation_values(values: &[String]) -> String {

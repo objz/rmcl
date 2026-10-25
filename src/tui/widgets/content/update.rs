@@ -321,20 +321,14 @@ fn user_conflict_reason(reason: &str) -> String {
     if let Some(details) = reason.strip_prefix("Conflicting selected versions for '")
         && let Some((dependency, _)) = details.split_once("': '")
     {
-        return format!(
-            "Other selected updates require different versions of {dependency}.\nThis mod was left unchanged; update it separately with v."
-        );
+        return format!("Other selected updates require different versions of {dependency}");
     }
     if let Some(details) = reason.strip_prefix("Conflicting required versions for '")
         && let Some((dependency, _)) = details.split_once("': '")
     {
-        return format!(
-            "This update requires incompatible versions of {dependency}.\nThis mod was left unchanged; choose another version with v."
-        );
+        return format!("Incompatible required versions of {dependency}");
     }
-    format!(
-        "This update could not be prepared: {reason}. The installed version was left unchanged; try updating it separately with v."
-    )
+    reason.to_owned()
 }
 
 #[cfg(test)]

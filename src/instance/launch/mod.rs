@@ -790,7 +790,7 @@ pub async fn launch(
     quick_play_world: Option<&str>,
 ) -> Result<(), LaunchError> {
     let name = config.name.clone();
-    let instance_lock = crate::instance::runtime::lock_instance(instances_dir, &name)
+    let mut instance_lock = crate::instance::runtime::lock_instance(instances_dir, &name)
         .map_err(|error| LaunchError::Parse(error.to_string()))?;
     let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
     let mut kill_rx = Some(kill_rx);
@@ -921,6 +921,10 @@ pub async fn launch(
     };
     tracing::debug!("[{}] Spawned Minecraft process", name);
 
+    if let Err(error) = instance_lock.allow_content_changes() {
+        finish_config_sync(config_sync_lock, &invocation.working_dir, &name);
+        return Err(error.into());
+    }
     crate::instance::runtime::set_state(&name, crate::instance::runtime::RunState::Running);
 
     let log_file_path = crate::instance::logs::files::create_log_file(instances_dir, &name);

@@ -4,9 +4,9 @@
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
     layout::{Alignment, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph, Widget},
+    widgets::{Block, Clear, Widget},
 };
 
 use crate::config::{settings::ShortcutHintScope, theme::BORDER_STYLE};
@@ -76,19 +76,24 @@ impl<'a> Widget for PopupFrame<'a> {
     }
 }
 
-pub fn render_summary(rows: &[(&str, &str)], area: Rect, buf: &mut Buffer) {
+pub fn summary_heading(title: &str) -> Line<'static> {
     let theme = crate::config::theme::THEME.as_ref();
-    let label_style = Style::default().fg(theme.text_dim());
-    let lines = rows
-        .iter()
-        .map(|(label, value)| {
-            Line::from(vec![
-                Span::styled(format!("{label}: "), label_style),
-                Span::styled(*value, Style::default().fg(theme.text())),
-            ])
-        })
-        .collect::<Vec<_>>();
-    Paragraph::new(lines).render(area, buf);
+    Line::styled(
+        format!("  {title}"),
+        Style::default()
+            .fg(theme.text())
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub fn summary_row<'a>(label: &str, value: impl Into<Line<'a>>) -> Line<'a> {
+    let theme = crate::config::theme::THEME.as_ref();
+    let mut spans = vec![Span::styled(
+        format!("  {label:<18}"),
+        Style::default().fg(theme.text_dim()),
+    )];
+    spans.extend(value.into().spans);
+    Line::from(spans).style(Style::default().fg(theme.text()))
 }
 
 #[cfg(test)]

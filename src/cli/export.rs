@@ -1,11 +1,20 @@
 use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 
 use crate::instance::InstanceManager;
-use crate::instance::export::{ExportOptions, export_curseforge};
+use crate::instance::export::{
+    ExportOptions, PackFormat, prepare_export, prepare_instance_export, validate_output,
+    write_export,
+};
 
 pub fn command() -> Command {
     Command::new("export")
-        .about("Export a CurseForge-compatible modpack ZIP")
+        .about("Export a CurseForge, Modrinth, or MultiMC/Prism modpack")
+        .arg(
+            Arg::new("format")
+                .long("format")
+                .value_parser(["curseforge", "mrpack", "mmc"])
+                .default_value("curseforge"),
+        )
         .arg(Arg::new("instance").help("Instance name"))
         .arg(
             Arg::new("directory")
@@ -48,12 +57,12 @@ pub fn command() -> Command {
             Arg::new("bundle-unmatched")
                 .long("bundle-unmatched")
                 .action(ArgAction::SetTrue)
-                .help("Bundle custom/unmatched mods in overrides"),
+                .help("Allow bundling custom/unmatched content (check redistribution permissions)"),
         )
 }
 
 pub async fn handle_export(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
-    let mut lock = None;
+    let mut instance_manager = None;
     let (root, name, game_version, loader, loader_version) = if let Some(directory) =
         matches.get_one::<String>("directory")
     {
@@ -83,13 +92,11 @@ pub async fn handle_export(matches: &ArgMatches) -> Result<(), Box<dyn std::erro
             settings.paths.resolve_meta_dir(),
         );
         drop(settings);
-        lock = Some(crate::instance::runtime::lock_instance(
-            &manager.instances_dir,
-            name,
-        )?);
         let config = manager.load_one(name)?;
+        let root = crate::storage::InstancePaths::new(manager.instances_dir.join(name)).minecraft();
+        instance_manager = Some(manager);
         (
-            crate::storage::InstancePaths::new(manager.instances_dir.join(name)).minecraft(),
+            root,
             config.name,
             config.game_version,
             config.loader,
@@ -97,6 +104,11 @@ pub async fn handle_export(matches: &ArgMatches) -> Result<(), Box<dyn std::erro
         )
     };
     let options = ExportOptions {
+        format: match super::utils::required_arg(matches, "format")? {
+            "mrpack" => PackFormat::Mrpack,
+            "mmc" => PackFormat::Mmc,
+            _ => PackFormat::CurseForge,
+        },
         name: matches.get_one::<String>("name").cloned().unwrap_or(name),
         version: super::utils::required_arg(matches, "version")?.to_owned(),
         author: super::utils::required_arg(matches, "author")?.to_owned(),
@@ -113,14 +125,45 @@ pub async fn handle_export(matches: &ArgMatches) -> Result<(), Box<dyn std::erro
     };
     let output =
         crate::config::settings::resolve_path(super::utils::required_arg(matches, "output")?);
+    validate_output(&root, &output).map_err(|error| error.to_string())?;
     println!(
         "Exporting '{}': identifying mods and packaging selected files...",
         options.name
     );
-    export_curseforge(&root, &output, &options)
+    let plan = if let Some(manager) = instance_manager {
+        prepare_instance_export(
+            &manager,
+            super::utils::required_arg(matches, "instance")?,
+            &options,
+        )
+        .await
+    } else {
+        prepare_export(&root, &options).await
+    }
+    .map_err(|error| error.to_string())?;
+    if !options.bundle_unmatched && !plan.unmatched.is_empty() {
+        eprintln!(
+            "To allow bundling unmatched content, use --bundle-unmatched after checking redistribution permissions."
+        );
+    }
+    let report = write_export(plan, &output)
         .await
         .map_err(|error| error.to_string())?;
-    drop(lock);
+    if !report.unmatched.is_empty() {
+        eprintln!(
+            "Bundled unmatched content:\n{}",
+            report
+                .unmatched
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
     println!("Exported '{}' to {}", options.name, output.display());
+    println!(
+        "{} referenced files, {} bundled files",
+        report.referenced_count, report.bundled_count
+    );
     Ok(())
 }

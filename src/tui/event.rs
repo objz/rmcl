@@ -39,6 +39,9 @@ impl App {
                 self.spawn_import(result);
             }
             import_modpack::drain(&self.picker);
+            if let Some(state) = self.export_popup.as_mut() {
+                state.drain();
+            }
 
             self.dismiss_expired_errors();
 
@@ -229,6 +232,7 @@ impl App {
                     .is_some_and(widgets::content::update::State::visible),
             )
             + usize::from(self.modpack_update_popup.is_some())
+            + usize::from(self.export_popup.is_some())
             + usize::from(self.modpack_versions_state.is_some())
             + usize::from(!matches!(
                 &self.account_state.add_mode,
@@ -681,6 +685,13 @@ impl App {
     }
 
     fn key_repeat_allowed(&self, key: &KeyEvent) -> bool {
+        if let Some(state) = &self.export_popup {
+            return (state.text_input_active() && repeatable_text_key(key))
+                || matches!(
+                    key.code,
+                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+                );
+        }
         let vertical_navigation = matches!(
             key.code,
             KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')

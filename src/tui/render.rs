@@ -180,18 +180,6 @@ impl App {
             widgets::popups::global_settings::render(frame, area, state);
         }
 
-        let all_errors = error_buffer::peek_all_errors();
-        self.sync_error_effects(&all_errors);
-        let mut next_y: u16 = 1;
-        for event in all_errors {
-            let elapsed_ms = event.pushed_at.elapsed().as_millis();
-            if let Some(area) = popup_area(frame.area(), &event.message, next_y, elapsed_ms) {
-                next_y = next_y.saturating_add(area.height + 1);
-                frame.render_widget(ErrorPopup::new(event.clone()), area);
-                self.render_error_effect(frame, area, &event, elapsed_ms);
-            }
-        }
-
         if self.instances_state.show_popup {
             let area = new_instance::popup_rect(frame.area());
             new_instance::render(frame, area, self.focused);
@@ -231,6 +219,20 @@ impl App {
 
         if let Some(update) = &self.modpack_update_popup {
             widgets::popups::modpack_update::render(frame, update);
+        }
+        if let Some(state) = self.export_popup.as_mut() {
+            widgets::popups::export_modpack::render(frame, state);
+        }
+        let all_errors = error_buffer::peek_all_errors();
+        self.sync_error_effects(&all_errors);
+        let mut next_y: u16 = 1;
+        for event in all_errors {
+            let elapsed_ms = event.pushed_at.elapsed().as_millis();
+            if let Some(area) = popup_area(frame.area(), &event.message, next_y, elapsed_ms) {
+                next_y = next_y.saturating_add(area.height + 1);
+                frame.render_widget(ErrorPopup::new(event.clone()), area);
+                self.render_error_effect(frame, area, &event, elapsed_ms);
+            }
         }
     }
 

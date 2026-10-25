@@ -230,7 +230,13 @@ fn instance_name_from_cfg(path: &Path) -> Option<String> {
     let reader = std::io::BufRead::lines(std::io::BufReader::new(raw.as_slice()));
     for line in reader.map_while(Result::ok) {
         if let Some(value) = line.strip_prefix("name=") {
-            let name = value.trim().to_string();
+            let value = value.trim();
+            let name = serde_json::from_str::<String>(value).unwrap_or_else(|_| value.to_owned());
+            let name = if name.starts_with("@@") {
+                name[1..].to_owned()
+            } else {
+                name
+            };
             if !name.is_empty() {
                 tracing::debug!("Read MultiMC instance name '{}' from instance.cfg", name);
                 return Some(name);

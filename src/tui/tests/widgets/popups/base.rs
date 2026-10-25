@@ -6,6 +6,30 @@ use std::num::NonZeroU16;
 use super::*;
 
 #[test]
+fn summary_columns_align_and_preserve_badge_styles() {
+    let theme = crate::config::theme::THEME.as_ref();
+    let badge = crate::tui::widgets::status_badge(".zip", theme.text_dim());
+    let rows = [
+        summary_row("Format", Line::from(badge)),
+        summary_row("Pack name", "Example"),
+    ];
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 3));
+    use ratatui::widgets::Paragraph;
+    Paragraph::new(vec![
+        summary_heading("Pack"),
+        rows[0].clone(),
+        rows[1].clone(),
+    ])
+    .render(buffer.area, &mut buffer);
+    assert_eq!(buffer[(2, 0)].symbol(), "P");
+    assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(20, 2)].symbol(), "E");
+    assert_eq!(buffer[(21, 1)].symbol(), ".");
+    assert_eq!(buffer[(21, 1)].bg, theme.text_dim());
+    assert_eq!(buffer[(21, 1)].fg, theme.background());
+}
+
+#[test]
 fn popup_cells_covering_terminal_images_are_always_redrawn() {
     let area = Rect::new(0, 0, 4, 3);
     let mut buffer = Buffer::empty(area);

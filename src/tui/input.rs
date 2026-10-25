@@ -24,6 +24,9 @@ impl App {
             }
             return;
         }
+        if self.export_popup.is_some() {
+            return;
+        }
         if self.handle_log_selection_mouse(event) {
             return;
         }
@@ -100,6 +103,12 @@ impl App {
     }
 
     pub(super) fn handle_key_event(&mut self, key_event: KeyEvent) -> color_eyre::Result<()> {
+        if let Some(state) = self.export_popup.as_mut() {
+            if state.handle_key(&key_event, &self.instance_manager) {
+                self.export_popup = None;
+            }
+            return Ok(());
+        }
         if self.content_update_popup.as_ref().is_some_and(|update| {
             update.phase != widgets::content::update::Phase::Applying
                 && self
@@ -1225,6 +1234,13 @@ impl App {
                     {
                         if let Some(instance) = self.instances_state.selected_instance().cloned() {
                             self.spawn_launch(instance, None);
+                        }
+                    }
+                    KeyCode::Char('e') if self.focused == FocusedArea::Instances => {
+                        if let Some(instance) = self.instances_state.selected_instance() {
+                            let mut popup = widgets::popups::export_modpack::State::new(instance);
+                            popup.start_scan(&self.instance_manager);
+                            self.export_popup = Some(popup);
                         }
                     }
                     KeyCode::Char('u')

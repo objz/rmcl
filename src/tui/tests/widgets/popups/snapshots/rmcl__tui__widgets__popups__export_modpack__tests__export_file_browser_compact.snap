@@ -1,0 +1,28 @@
+---
+source: src/tui/tests/widgets/popups/export_modpack.rs
+expression: compact.backend()
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"         ╭ Included Files · Example ──────────────────────────────────╮         "
+"         │minecraft/                                                  │         "
+"         │3 selected · 0 links · 2 copies · 1 unmatched               │         "
+"         │[ ] Copy 1 unmatched                                        │         "
+"         │Check licences                                              │         "
+"         │▌ [✓] config/                                            2/2│         "
+"         │  [✓] mods/                                              1/1│         "
+"         │  [ ] saves/                                             0/1│         "
+"         │  [ ] options.txt                                           │         "
+"         │                                                            │         "
+"         │                                                            │         "
+"         │                                                            │         "
+"         │                                                            │         "
+"         │                                                            │         "
+"         │                                                            │         "
+"         ╰──────[Space] toggle  [Enter] continue  [c] copy  [Esc] back╯         "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "

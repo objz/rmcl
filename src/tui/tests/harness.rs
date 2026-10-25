@@ -99,6 +99,7 @@ impl UiHarness {
                 instance_manager.instances_dir.clone(),
             ),
             instance_settings: None,
+            export_popup: None,
             pending_instance_settings_updates: Default::default(),
             global_settings: None,
             picker,

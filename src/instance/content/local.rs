@@ -172,6 +172,15 @@ pub(crate) fn relative_path(minecraft_dir: &Path, path: &Path) -> io::Result<Pat
     Ok(relative.to_owned())
 }
 
+fn mutation_lock(manifest_path: &Path, relative: &Path) -> io::Result<ContentLock> {
+    if relative.starts_with("saves") && relative.components().count() <= 2 {
+        ContentLock::acquire_stopped(manifest_path)
+    } else {
+        ContentLock::acquire(manifest_path)
+    }
+    .map_err(io::Error::other)
+}
+
 pub(crate) fn validate_record(minecraft_dir: &Path, record: &ContentFileRecord) -> io::Result<()> {
     let path = minecraft_dir.join(&record.relative_path);
     relative_path(minecraft_dir, &path)?;
@@ -282,13 +291,13 @@ pub(crate) fn toggle(entry: &ContentEntry) -> io::Result<Option<PathBuf>> {
     } else {
         minecraft_dir.join(".rmcl-content.json")
     };
-    let lock = ContentLock::acquire(&manifest_path).map_err(io::Error::other)?;
+    let relative = relative_path(minecraft_dir, &entry.path)?;
+    let lock = mutation_lock(&manifest_path, &relative)?;
     let mut manifest = if instance_minecraft.is_some() {
         lock.load().map_err(io::Error::other)?
     } else {
         ContentManifest::default()
     };
-    let relative = relative_path(minecraft_dir, &entry.path)?;
     let new_relative = relative_path(minecraft_dir, &new_path)?;
     require_absent(&new_path)?;
     if manifest.record(&new_relative).is_some() {
@@ -386,10 +395,10 @@ pub(crate) fn remove(
     expected: &[ContentFileRecord],
     orphan_only: bool,
 ) -> io::Result<(ContentManifest, Vec<PathBuf>)> {
-    let lock = ContentLock::acquire(manifest_path).map_err(io::Error::other)?;
+    let relative = relative_path(minecraft_dir, path)?;
+    let lock = mutation_lock(manifest_path, &relative)?;
     let mut manifest = lock.load().map_err(io::Error::other)?;
     let previous = manifest.clone();
-    let relative = relative_path(minecraft_dir, path)?;
     if manifest
         .files
         .iter()

@@ -45,89 +45,7 @@ it does everything you'd expect from a launcher.
 
 Browse Modrinth and CurseForge modpacks or import Modrinth, CurseForge, and MultiMC/Prism archives (including GTNH packs in that format). Direct imports accept a local archive, Modrinth URL, or Modrinth project slug. CurseForge requires a build-time [API key](#curseforge-api). Multiple Microsoft accounts and offline accounts are supported.
 
-### exporting modpacks
-
-Press `e` on an instance to open the TUI exporter; its file scan starts immediately.
-Unchanged files reuse hashes from the content index; writing the archive verifies them again.
-Use `j`/`k` or the arrow keys to select a row, `h`/`l` to cycle formats, and `Enter`
-to edit metadata. The format row shows the archive extension; MultiMC/Prism also
-shows a **Bundled** badge.
-
-Author defaults to the system username. Metadata unsupported by the chosen
-format stays disabled, so changing formats does not resize the form.
-
-Once scanning finishes, open **Included files** to browse the game folder. Default pack files start
-checked; worlds, logs and personal settings start unchecked. Use `h`/`l` to move
-between folders and `Space` to select or deselect a file or a whole folder. `h`
-stops at the root; only `Esc` returns to the form. The selection summary appears
-beside the files, or above them in narrow terminals. It separates download links,
-ordinary file copies (such as configs and shaders), and unmatched content. Links
-are downloaded on import; file copies are stored inside the archive. Unmatched
-files and their containing folders use yellow names, even when unchecked.
-Press `c` to allow copying those files after checking their redistribution licences. Press `Enter` for
-the final export summary, then `Enter` again to write the archive. Existing files
-require one additional overwrite confirmation. The popup closes when writing
-starts; progress appears in Overview and errors appear as toasts, without a
-completion popup. `Esc` goes back without exporting. Symlinks, disabled files and
-unsafe paths are not selectable.
-
-The CLI supports the same formats:
-
-```sh
-rmcl export "My Instance" --format curseforge --output pack.zip
-rmcl export "My Instance" --format mrpack --output pack.mrpack
-rmcl export "My Instance" --format mmc --output prism-pack.zip
-```
-
-`curseforge` is the default. MultiMC/Prism exports bundle selected files and work
-offline. CurseForge and Modrinth exports identify content through their APIs and
-reference exact matching files. Unmatched content requires explicit approval:
-`--bundle-unmatched` in the CLI or the checkbox in the TUI file browser. Only bundle
-files you have permission to redistribute. Author metadata is written for
-CurseForge; the other formats do not have an equivalent author field.
-Modrinth exports target clients; server compatibility is not inferred from an
-installed client instance.
-
-Exports include enabled mods, configs, scripts, resource packs, shaders and the
-top-level datapacks folder. Worlds, logs and personal settings are excluded by
-default. Add files or folders with repeatable `--include` arguments, for example
-`--include options.txt --include saves/MyWorld`. Symlinks and non-portable paths
-are rejected. The CLI refuses existing output files; the TUI replaces them only
-after confirmation and successful archive creation. Output must be outside the game folder.
-
-For a standalone folder, use `--directory` instead of an instance name:
-
-```sh
-rmcl export --directory ./minecraft --minecraft 1.21.1 --loader fabric \
-  --loader-version 0.16.14 --format mrpack --output pack.mrpack
-```
-
 ---
-
-## navigation
-
-Use `Ctrl` + arrow keys to move between the Instances, Content, Accounts,
-Settings, and Overview panels. In Content, use plain `Left` / `Right` or `h` / `l`
-to switch tabs, and `Tab` to switch between installed content and discovery.
-
-Content can be installed, updated, removed, or enabled/disabled while a game is
-running. Mods normally apply on the next launch; packs and configs may reload
-live, and the operating system can still reject changes to open files. Instance
-deletion, renaming, world deletion/renaming, runtime changes, and whole-modpack replacement require stopping it.
-
-## authentication
-
-rmcl uses its own Microsoft client ID for Minecraft account authentication.
-
-Authentication is performed through Microsoft’s official services.
-
-## CurseForge API
-
-Git, source, and Cargo builds use rmcl's dedicated API key unless `CURSEFORGE_API_KEY` is set at compile time. An empty or whitespace-only override disables CurseForge.
-Use of the API is subject to the [CurseForge 3rd Party API Terms and Conditions](https://support.curseforge.com/en/support/solutions/articles/9000207405-curse-forge-3rd-party-api-terms-and-conditions).
-Keys supplied for rmcl are for rmcl builds only. Forks, rebranded applications,
-and unrelated projects must use their own key. Keys included in source or compiled
-binaries are extractable; do not publish a private key.
 
 ## installation
 
@@ -156,7 +74,7 @@ using a custom GLFW library alone does not provide the other required libraries.
 release builds include a `.zip` archive and an `.msi`. WinGet packages are
 submitted from release CI and become available after review.
 
-[![WinGet](https://img.shields.io/badge/winget-Objz.Rmcl-0078D4?style=for-the-badge&logo=windows11)](https://winstall.app/apps/Objz.Rmcl)
+[![WinGet](https://img.shields.io/badge/winget-Objz.Rmcl-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDBoMTF2MTFIMHptMTMgMGgxMXYxMUgxM3pNMCAxM2gxMXYxMUgwem0xMyAwaDExdjExSDEzeiIvPjwvc3ZnPg%3D%3D)](https://winstall.app/apps/Objz.Rmcl)
 ```powershell
 # WinGet
 winget install Objz.Rmcl
@@ -215,6 +133,50 @@ git clone https://github.com/objz/rmcl.git
 cd rmcl
 cargo build --release
 ```
+
+---
+
+## navigation
+
+Use `Ctrl` + arrow keys to move between the Instances, Content, Accounts,
+Settings, and Overview panels. In Content, use plain `Left` / `Right` or `h` / `l`
+to switch tabs, and `Tab` to switch between installed content and discovery.
+
+Content can be installed, updated, removed, or enabled/disabled while a game is
+running. Mods normally apply on the next launch; packs and configs may reload
+live, and the operating system can still reject changes to open files. Instance
+deletion, renaming, world deletion/renaming, runtime changes, and whole-modpack replacement require stopping it.
+
+## exporting modpacks
+
+Export modpacks from the TUI or CLI as CurseForge (`curseforge`, the default),
+Modrinth (`mrpack`) or MultiMC/Prism (`mmc`) archives.
+
+```sh
+rmcl export "My Instance" --format curseforge --output pack.zip
+```
+
+Worlds, logs and personal settings are excluded by default. Add files with
+repeatable `--include` options. CurseForge and Modrinth reference matching downloads;
+`--bundle-unmatched` allows copying unmatched content after you check redistribution
+permissions. MultiMC/Prism bundles files and works offline.
+
+Choose a new output path outside the game folder. For standalone folders, use
+`--directory` instead of an instance name; see `rmcl export --help` for options.
+
+## authentication
+
+rmcl uses its own Microsoft client ID for Minecraft account authentication.
+
+Authentication is performed through Microsoft’s official services.
+
+## CurseForge API
+
+Git, source, and Cargo builds use rmcl's dedicated API key unless `CURSEFORGE_API_KEY` is set at compile time. An empty or whitespace-only override disables CurseForge.
+Use of the API is subject to the [CurseForge 3rd Party API Terms and Conditions](https://support.curseforge.com/en/support/solutions/articles/9000207405-curse-forge-3rd-party-api-terms-and-conditions).
+Keys supplied for rmcl are for rmcl builds only. Forks, rebranded applications,
+and unrelated projects must use their own key. Keys included in source or compiled
+binaries are extractable; do not publish a private key.
 
 ---
 

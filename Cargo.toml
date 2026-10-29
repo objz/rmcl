@@ -1,6 +1,6 @@
 [package]
 name = "rmcl"
-version = "0.6.3"
+version = "0.6.4"
 authors = ["objz"]
 edition = "2024"
 description = "A fully featured Minecraft TUI launcher"

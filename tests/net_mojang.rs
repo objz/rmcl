@@ -411,8 +411,11 @@ async fn download_assets_writes_index_when_objects_is_empty() {
     assert!(body.get("objects").is_some());
 }
 
+#[rstest::rstest]
+#[case(b"{\"objects\":{\"fake\":{}}}")]
+#[case(b"{\"objects\":{},\"virtual\":false}")]
 #[tokio::test]
-async fn invalid_cached_index_is_refetched() {
+async fn mismatched_cached_index_is_refetched(#[case] cached: &[u8]) {
     let server = MockServer::start().await;
     let body = serde_json::to_vec(&json!({"objects": {}})).unwrap();
     Mock::given(method("GET"))
@@ -426,7 +429,7 @@ async fn invalid_cached_index_is_refetched() {
     let tmp = tempfile::tempdir().unwrap();
     let index_path = tmp.path().join("cache/minecraft/assets/indexes/5.json");
     std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
-    std::fs::write(&index_path, b"{\"objects\":{\"fake\":{}}}").unwrap();
+    std::fs::write(&index_path, cached).unwrap();
 
     download_assets(&HttpClient::new(), &meta, tmp.path())
         .await

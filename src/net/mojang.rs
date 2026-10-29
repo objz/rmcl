@@ -522,8 +522,8 @@ pub async fn download_assets_from(
             serde_json::from_slice(&bytes).ok()
         }
         Ok(_) => {
-            tracing::warn!(
-                "Invalid cached asset index at {}; fetching again",
+            tracing::debug!(
+                "Cached asset index at {} does not match the requested version; fetching again",
                 index_path.display()
             );
             None

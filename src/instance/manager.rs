@@ -632,7 +632,7 @@ impl InstanceManager {
 
         let config_path = self.instances_dir.join(name).join("instance.json");
         if !config_path.exists() {
-            tracing::warn!(
+            tracing::debug!(
                 "Instance '{}' config is missing at {}",
                 name,
                 config_path.display()
